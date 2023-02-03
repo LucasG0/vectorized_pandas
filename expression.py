@@ -140,6 +140,9 @@ class NegateBooleanExpr(Expr):
 
 @dataclass
 class TrivialFuncCall(Expr):
+    """
+    Represent a function call of a function that can act on both scalar and series. eg: pd.isna.
+    """
 
     alias: str
     func_name: str
@@ -148,6 +151,22 @@ class TrivialFuncCall(Expr):
     def to_vectorized_code(self) -> str:
         formatted_params = [remove_extra_parenthesis(param.to_vectorized_code()) for param in self.params]
         return self.alias + "." + self.func_name + "(" + ",".join(formatted_params) + ")"
+
+
+@dataclass
+class TypeCastFuncCall(Expr):
+    """
+    Represent a native or a numpy type cast. eg: int(x), np.float64(x).
+    """
+
+    alias: Optional[str]
+    func_name: str
+    param: Expr  # do not support extra params that could be passed to np.int32 for instance
+
+    def to_vectorized_code(self) -> str:
+        formatted_param = remove_extra_parenthesis(self.param.to_vectorized_code())
+        full_func_name = self.alias + "." + self.func_name if self.alias is not None else self.func_name
+        return formatted_param + ".astype(" + full_func_name + ")"
 
 
 def remove_extra_parenthesis(expr_code: str) -> str:

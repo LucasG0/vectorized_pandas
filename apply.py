@@ -14,6 +14,7 @@ from expression import (
     Expr,
     NegateBooleanExpr,
     TrivialFuncCall,
+    TypeCastFuncCall,
     convert_expr_to_vectorized_code,
 )
 
@@ -53,6 +54,26 @@ DEFAULT_NUMPY_ALIAS = ["numpy", "np"]
 REPLACEABLE_PANDAS_FUNCS = {"isna", "isnull"}
 REPLACEABLE_NUMPY_FUNCS = {"isnan"}
 
+NATIVE_TYPE_FUNCS = ["int", "str", "float", "bool"]
+NUMPY_TYPE_FUNCS = [
+    "int",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "uint",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "float",
+    "float16",
+    "float32",
+    "float64",
+    "bool",
+    "str",
+]
+
 
 @dataclass
 class ApplyInfo:
@@ -75,7 +96,6 @@ class ResolvedAssign:
 
 
 class FunctionBodyParser:
-
     pandas_alias: List[str]
     numpy_alias: List[str]
 
@@ -83,7 +103,15 @@ class FunctionBodyParser:
         self.pandas_alias = DEFAULT_PANDAS_ALIAS
         self.numpy_alias = DEFAULT_NUMPY_ALIAS
 
-    def is_replaceable_func(self, alias, func_name) -> bool:
+    def is_type_cast_func(self, alias: Optional[str], func_name: str) -> bool:
+        return (alias is None and func_name in NATIVE_TYPE_FUNCS) or (
+            alias in self.numpy_alias and func_name in NUMPY_TYPE_FUNCS
+        )
+
+    def is_replaceable_func(self, alias: Optional[str], func_name: str) -> bool:
+        if alias is None:
+            return False
+
         return (alias in self.pandas_alias and func_name in REPLACEABLE_PANDAS_FUNCS) or (
             alias in self.numpy_alias and func_name in REPLACEABLE_NUMPY_FUNCS
         )
@@ -119,16 +147,27 @@ class FunctionBodyParser:
             return dependencies[expr_node.id]  # The expression is supposed to be already resolved ?
 
         if isinstance(expr_node, ast.Call):
-            if not isinstance(expr_node.func, ast.Attribute) or not isinstance(expr_node.func.value, ast.Name):
+            func = expr_node.func
+            # Either a function, or a package/method call.
+            if isinstance(func, ast.Name):
+                alias = None
+                func_name = func.id
+            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                alias = func.value.id
+                func_name = func.attr
+            else:
                 raise NotImplementedError(f"Function call node {expr_node}")
 
-            alias = expr_node.func.value.id
-            func_name = expr_node.func.attr
-            if self.is_replaceable_func(expr_node.func.value.id, expr_node.func.attr):
+            if alias is not None and self.is_replaceable_func(alias, func_name):
                 return TrivialFuncCall(
                     alias=alias,
                     func_name=func_name,
                     params=[self._resolve_expr(arg, dependencies) for arg in expr_node.args],
+                )
+
+            if self.is_type_cast_func(alias, func_name) and len(expr_node.args) == 1:
+                return TypeCastFuncCall(
+                    alias=alias, func_name=func_name, param=self._resolve_expr(expr_node.args[0], dependencies)
                 )
 
         raise NotImplementedError(type(expr_node))
@@ -208,7 +247,9 @@ class FunctionBodyParser:
             elif isinstance(stmt, ast.If):
                 if_else_dependencies = self.parse_if_else(stmt, dependencies)
                 dependencies = self.merge_dependencies(dependencies, if_else_dependencies)  # type: ignore[arg-type]
-                new_dependencies = self.merge_dependencies(new_dependencies, if_else_dependencies)  # type: ignore[arg-type]
+                new_dependencies = self.merge_dependencies(
+                    new_dependencies, if_else_dependencies  # type: ignore[arg-type]
+                )
             else:
                 raise NotImplementedError(type(stmt))
 
@@ -431,10 +472,13 @@ def maybe_replace_apply_package_func_inplace(
 
     alias = func_node.value.id
     func_name = func_node.attr
-    if not parser.is_replaceable_func(alias, func_name):
+    if parser.is_replaceable_func(alias, func_name):
+        vectorized_code = f"{apply_info.assigned_var_name} = {alias}.{func_name}({apply_info.calling_var_name})"
+    elif parser.is_type_cast_func(alias, func_name):
+        vectorized_code = f"{apply_info.assigned_var_name} = {apply_info.calling_var_name}.astype({alias}.{func_name})"
+    else:
         return
 
-    vectorized_code = f"{apply_info.assigned_var_name} = {alias}.{func_name}({apply_info.calling_var_name})"
     replace_apply_assignment_inplace(lines_of_code, vectorized_code, apply_info.start_lineno, apply_info.end_lineno)
 
 
@@ -466,6 +510,18 @@ def maybe_replace_apply_udf_inplace(
     flag_lines_to_remove_inplace(lines_of_code, func_def_node.lineno - 1, func_def_node.end_lineno)
 
 
+def replace_apply_type_cast(lines_of_code: List[str], apply_info: ApplyInfo):
+    """
+    Replace series.apply(type) into series.astype(type).
+    """
+
+    assert isinstance(apply_info.ast_func_expr, ast.Name)
+
+    type_ = apply_info.ast_func_expr.id
+    vectorized_code = f"{apply_info.assigned_var_name} = {apply_info.calling_var_name}.astype({type_})"
+    replace_apply_assignment_inplace(lines_of_code, vectorized_code, apply_info.start_lineno, apply_info.end_lineno)
+
+
 def replace_apply(input_code: str):
     """
     - Build the ast of input_code.
@@ -490,13 +546,17 @@ def replace_apply(input_code: str):
         elif numpy_alias := get_package_alias(stmt, "numpy"):  # eg: import numpy as np
             parser.numpy_alias = [numpy_alias]
         elif apply_info := get_assignment_apply_expr_info(stmt, input_code):  # eg: s = s.apply(...)
-            if isinstance(apply_info.ast_func_expr, ast.Lambda):  # eg: apply(lambda x: x+1)
+            func_expr = apply_info.ast_func_expr
+            if isinstance(func_expr, ast.Lambda):  # eg: apply(lambda x: x+1)
                 maybe_replace_apply_lambda_inplace(lines, apply_info, parser)
-            elif isinstance(apply_info.ast_func_expr, ast.Attribute):  # eg: apply(pd.isna)
+            elif isinstance(func_expr, ast.Attribute):  # eg: apply(pd.isna)
                 maybe_replace_apply_package_func_inplace(lines, apply_info, parser)
-            elif isinstance(apply_info.ast_func_expr, ast.Name):  # eg: apply(udf)
-                # Keep the name of the udf applied, and we will resolve the function return expression afterwards.
-                func_name_to_apply_info[apply_info.ast_func_expr.id] = apply_info
+            elif isinstance(func_expr, ast.Name):  # eg: apply(func)
+                if func_expr.id in NATIVE_TYPE_FUNCS:
+                    replace_apply_type_cast(lines, apply_info)
+                else:
+                    # Keep the name of the udf applied, and we will resolve the function return expression afterwards.
+                    func_name_to_apply_info[func_expr.id] = apply_info
 
     # Resolve the statements of functions applied, and replace the `apply` accordingly if possible.
     if len(func_name_to_apply_info) > 0:
