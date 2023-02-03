@@ -159,6 +159,44 @@ class TestReplaceApplySimpleFunctions:
     def test_lambda_function(self, input_code, expected_code):
         compare(input_code, expected_code)
 
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+                import pandas as pd
+                s = s.apply(int)
+                s = s.apply(np.float)
+                """,
+                """
+                import pandas as pd
+                s = s.astype(int)
+                s = s.astype(np.float)
+                """,
+            ),
+            (
+                """
+                def func(val):
+                    return float(np.int(val))
+                s = s.apply(func)
+                """,
+                """
+                s = s.astype(np.int).astype(float)
+                """,
+            ),
+            (
+                """
+                    s = s.apply(lambda x: str(x))
+                    """,
+                """
+                    s = s.astype(str)
+                    """,
+            ),
+        ],
+    )
+    def test_type_cast(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
 
 class TestReplaceApplyConditionalFunctions:
     @pytest.mark.parametrize(
