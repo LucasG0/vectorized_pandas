@@ -197,6 +197,45 @@ class TestReplaceApplySimpleFunctions:
     def test_type_cast(self, input_code, expected_code):
         compare(input_code, expected_code)
 
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+                    def func(val):
+                        return val.capitalize()
+                    s = s.apply(func)
+                    """,
+                """
+                    s = s.str.capitalize()
+                    """,
+            ),
+            (
+                """
+                def func(val):
+                    return val.capitalize().startswith("A")
+                s = s.apply(func)
+                """,
+                """
+                s = s.str.capitalize().str.startswith("A")
+                """,
+            ),
+            (
+                """
+                def func(val):
+                    return ((val + "b").capitalize() + "a").startswith("A")
+                s = s.apply(func)
+                """,
+                """
+                s = ((s + "b").str.capitalize() + "a").str.startswith("A")
+                """,
+            ),
+        ],
+    )
+    # TODO atm we replace on "top
+    def test_str_methods(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
 
 class TestReplaceApplyConditionalFunctions:
     @pytest.mark.parametrize(
@@ -213,7 +252,7 @@ class TestReplaceApplyConditionalFunctions:
             s = s.apply(func)
             """,
                 """
-            s = np.select(conditions=[(s == 1)], choices=['A'], default='C')
+            s = np.select(conditions=[(s == 1)], choices=["A"], default="C")
             """,
             ),
             (
@@ -229,7 +268,7 @@ class TestReplaceApplyConditionalFunctions:
             s = s.apply(func)
             """,
                 """
-            s = np.select(conditions=[(s == 1), (s == 2)], choices=['A', 'B'], default='C')
+            s = np.select(conditions=[(s == 1), (s == 2)], choices=["A", "B"], default="C")
             """,
             ),
         ],
@@ -250,7 +289,7 @@ class TestReplaceApplyConditionalFunctions:
             s = s.apply(func)
             """,
                 """
-            s = np.select(conditions=[(s == 1)], choices=['B'], default='A')
+            s = np.select(conditions=[(s == 1)], choices=["B"], default="A")
             """,
             ),
             (
@@ -292,7 +331,7 @@ class TestReplaceApplyConditionalFunctions:
             s = s.apply(func)
             """,
                 """
-            s = np.select(conditions=[(s == 1) & (s == 5), (s == 1) & ~((s == 5)), (s == 10)], choices=['A', 'B', 'C'], default='D')
+            s = np.select(conditions=[(s == 1) & (s == 5), (s == 1) & ~((s == 5)), (s == 10)], choices=["A", "B", "C"], default="D")
             """,
             )
         ],
@@ -314,7 +353,7 @@ class TestReplaceApplyConditionalFunctions:
             s = s.apply(func)
             """,
                 """
-            s = np.select(conditions=[(s == 1), (s == 2)], choices=['B', 'C'], default=s)
+            s = np.select(conditions=[(s == 1), (s == 2)], choices=["B", "C"], default=s)
             """,
             )
         ],

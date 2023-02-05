@@ -37,14 +37,22 @@ class Constant(Expr):
 
     def to_vectorized_code(self) -> str:
         if isinstance(self.value, str):
-            return f"'{self.value}'"
+            return f'"{self.value}"'
         return str(self.value)
+
+
+@dataclass
+class Alias(Expr):
+    name: str
+
+    def to_vectorized_code(self) -> str:
+        return self.name
 
 
 @dataclass
 class ApplyFuncArg(Expr):
     """
-    Identifies the input parameter of the function applied. We need to differentiate it from regular variables $
+    Identifies the input parameter of the function applied. We need to differentiate it from regular variables
     as it will be converted to the variable name calling `apply` when vectorizing.
 
     eg:
@@ -154,6 +162,22 @@ class TrivialFuncCall(Expr):
 
 
 @dataclass
+class StrMethodCall(Expr):
+    """
+    Represent a call to a str method on a scalar to convert to the corresponding pandas string accessor method.
+    eg: val.upper() -> s.str.upper()
+    """
+
+    caller: Expr
+    method_name: str
+    params: List[Expr]  # assumed constant
+
+    def to_vectorized_code(self) -> str:
+        params_code = ",".join([param.to_vectorized_code() for param in self.params])
+        return f"{self.caller.to_vectorized_code()}.str.{self.method_name}({params_code})"
+
+
+@dataclass
 class TypeCastFuncCall(Expr):
     """
     Represent a native or a numpy type cast. eg: int(x), np.float64(x).
@@ -189,5 +213,6 @@ def convert_expr_to_vectorized_code(expr: Expr, calling_var_name: str, assigned_
 
     expr_code = expr.to_vectorized_code()
     expr_code = expr_code.replace(TO_REPLACE_BY_VAR_NAME, calling_var_name)
-    expr_code = remove_extra_parenthesis(expr_code)
+    if isinstance(expr, (BinaryOp, BinaryBooleanExpr)):
+        expr_code = remove_extra_parenthesis(expr_code)
     return f"{assigned_var_name} = {expr_code}"

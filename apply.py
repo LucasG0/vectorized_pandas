@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional
 
 from expression import (
+    Alias,
     ApplyFuncArg,
     BinaryBooleanExpr,
     BinaryOp,
@@ -13,6 +14,7 @@ from expression import (
     Constant,
     Expr,
     NegateBooleanExpr,
+    StrMethodCall,
     TrivialFuncCall,
     TypeCastFuncCall,
     convert_expr_to_vectorized_code,
@@ -74,6 +76,52 @@ NUMPY_TYPE_FUNCS = [
     "str",
 ]
 
+# TODO important that work differently: 'contains', 'join'
+# Others: 'extract', 'extractall', 'findall', 'fullmatch', 'get', 'get_dummies', match', 'normalize', 'pad',  'repeat', 'wrap'
+STR_METHODS = [
+    "capitalize",
+    "casefold",
+    "center",
+    "count",
+    "decode",
+    "encode",
+    "endswith",
+    "find",
+    "index",
+    "isalnum",
+    "isalpha",
+    "isdecimal",
+    "isdigit",
+    "islower",
+    "isnumeric",
+    "isspace",
+    "istitle",
+    "isupper",
+    "join",
+    "len",
+    "ljust",
+    "lower",
+    "lstrip",
+    "partition",
+    "replace",
+    "rfind",
+    "rindex",
+    "rjust",
+    "rpartition",
+    "rsplit",
+    "rstrip",
+    "slice",
+    "slice_replace",
+    "split",
+    "startswith",
+    "strip",
+    "swapcase",
+    "title",
+    "translate",
+    "upper",
+    "zfill",
+]
+
 
 @dataclass
 class ApplyInfo:
@@ -96,25 +144,90 @@ class ResolvedAssign:
 
 
 class FunctionBodyParser:
+
+    udf_name_to_func_def_node: Dict[str, ast.FunctionDef]
+    input_code: str  # used for ast.get_source_segment
+
     pandas_alias: List[str]
     numpy_alias: List[str]
 
-    def __init__(self):
+    def __init__(self, input_code: str):
+        self.udf_name_to_func_def_node = {}
+        self.input_code = input_code
         self.pandas_alias = DEFAULT_PANDAS_ALIAS
         self.numpy_alias = DEFAULT_NUMPY_ALIAS
 
-    def is_type_cast_func(self, alias: Optional[str], func_name: str) -> bool:
-        return (alias is None and func_name in NATIVE_TYPE_FUNCS) or (
-            alias in self.numpy_alias and func_name in NUMPY_TYPE_FUNCS
-        )
-
-    def is_replaceable_func(self, alias: Optional[str], func_name: str) -> bool:
+    def is_external_package_func(self, alias: Optional[str], func_name: str) -> bool:
         if alias is None:
             return False
 
         return (alias in self.pandas_alias and func_name in REPLACEABLE_PANDAS_FUNCS) or (
             alias in self.numpy_alias and func_name in REPLACEABLE_NUMPY_FUNCS
         )
+
+    def _resolve_binary_op(self, binary_op_node: ast.BinOp, dependencies: Dict[str, Expr]) -> BinaryOp:
+        # TODO Handle the fact that if left and/or right are Conditional, we should build a Conditional binary op.
+
+        left = self._resolve_expr(binary_op_node.left, dependencies)
+        right = self._resolve_expr(binary_op_node.right, dependencies)
+        return BinaryOp(left=left, right=right, pd_symbol=get_op_symbol(binary_op_node.op))
+
+    def _resolve_compare(self, compare_node: ast.Compare, dependencies: Dict[str, Expr]) -> BinaryBooleanExpr:
+        assert len(compare_node.comparators) == 1, "multiple comparators not supported"
+        assert len(compare_node.ops) == 1, "multiple comparison ops not supported"
+
+        left = self._resolve_expr(compare_node.left, dependencies)
+        right = self._resolve_expr(compare_node.comparators[0], dependencies)
+        return BinaryBooleanExpr(
+            left=left,
+            right=right,
+            pd_symbol=get_comp_symbol(compare_node.ops[0]),
+        )
+
+    def _resolve_call(self, call_node: ast.Call, dependencies: Dict[str, Expr]) -> Expr:
+        """
+        Multiple cases to handle:
+        - Calling a UDF.
+        - Calling a builtin type cast function (int, str, ...).
+        - Calling an external type cast function (np.int8, ...)
+        - Calling a function from an external package (pd.isna, np.log, ...).
+        - Calling a UDF from an eternal module -> NOT SUPPORTED.
+        """
+
+        func = call_node.func
+        args_expr = [self._resolve_expr(arg, dependencies) for arg in call_node.args]
+
+        if isinstance(func, ast.Name):
+            if func.id in NATIVE_TYPE_FUNCS and len(args_expr) == 1:
+                return TypeCastFuncCall(alias=None, func_name=func.id, param=args_expr[0])
+
+            if func.id in self.udf_name_to_func_def_node:
+                return self.parse_function_def(self.udf_name_to_func_def_node[func.id], args_expr)
+
+        if isinstance(func, ast.Attribute):
+            caller_expr = self._resolve_expr(func.value, dependencies)
+            func_name = func.attr
+
+            if func_name in STR_METHODS:
+                return StrMethodCall(
+                    caller=caller_expr,
+                    method_name=func_name,
+                    params=args_expr,
+                )
+
+            if isinstance(caller_expr, Alias):
+                alias = caller_expr.name
+                if self.is_external_package_func(alias, func_name):
+                    return TrivialFuncCall(
+                        alias=alias,
+                        func_name=func_name,
+                        params=args_expr,
+                    )
+
+                if alias in self.numpy_alias and func_name in NUMPY_TYPE_FUNCS and len(args_expr) == 1:
+                    return TypeCastFuncCall(alias=alias, func_name=func_name, param=args_expr[0])
+
+        raise NotImplementedError()
 
     def _resolve_expr(self, expr_node: Optional[ast.expr], dependencies: Dict[str, Expr]) -> Expr:
         """
@@ -123,67 +236,35 @@ class FunctionBodyParser:
 
         assert expr_node is not None, "Trying to resolve an empty expression node"
 
-        # TODO Handle the fact that if left and/or right are Conditional, we should build a Conditional binary op.
-        if isinstance(expr_node, ast.BinOp):
-            left = self._resolve_expr(expr_node.left, dependencies)
-            right = self._resolve_expr(expr_node.right, dependencies)
-            return BinaryOp(left=left, right=right, pd_symbol=get_op_symbol(expr_node.op))
-
-        if isinstance(expr_node, ast.Compare):
-            assert len(expr_node.comparators) == 1, "multiple comparators not supported"
-            assert len(expr_node.ops) == 1, "multiple comparison ops not supported"
-            left = self._resolve_expr(expr_node.left, dependencies)
-            right = self._resolve_expr(expr_node.comparators[0], dependencies)
-            return BinaryBooleanExpr(
-                left=left,
-                right=right,
-                pd_symbol=get_comp_symbol(expr_node.ops[0]),
-            )
-
         if isinstance(expr_node, ast.Constant):
             return Constant(expr_node.value)
 
         if isinstance(expr_node, ast.Name):
-            return dependencies[expr_node.id]  # The expression is supposed to be already resolved ?
+            if expr_node.id in self.numpy_alias or expr_node.id in self.pandas_alias:
+                return Alias(expr_node.id)
+            return dependencies[expr_node.id]
+
+        if isinstance(expr_node, ast.BinOp):
+            return self._resolve_binary_op(expr_node, dependencies)
+
+        if isinstance(expr_node, ast.Compare):
+            return self._resolve_compare(expr_node, dependencies)
 
         if isinstance(expr_node, ast.Call):
-            func = expr_node.func
-            # Either a function, or a package/method call.
-            if isinstance(func, ast.Name):
-                alias = None
-                func_name = func.id
-            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-                alias = func.value.id
-                func_name = func.attr
-            else:
-                raise NotImplementedError(f"Function call node {expr_node}")
-
-            if alias is not None and self.is_replaceable_func(alias, func_name):
-                return TrivialFuncCall(
-                    alias=alias,
-                    func_name=func_name,
-                    params=[self._resolve_expr(arg, dependencies) for arg in expr_node.args],
-                )
-
-            if self.is_type_cast_func(alias, func_name) and len(expr_node.args) == 1:
-                return TypeCastFuncCall(
-                    alias=alias, func_name=func_name, param=self._resolve_expr(expr_node.args[0], dependencies)
-                )
+            return self._resolve_call(expr_node, dependencies)
 
         raise NotImplementedError(type(expr_node))
 
-    def parse_function_def(self, func_def_node: ast.FunctionDef) -> Expr:
+    def parse_function_def(self, func_def_node: ast.FunctionDef, args_expr: List[Expr]) -> Expr:
         """
-        Entry point of this class to parse a function passed to `apply`. Initiate the parsing of the function body,
-        and return the Expr object associated to the __RETURN__ dependency. See details in `parse_function_body` docstring.
+        Initiate the parsing of the function body, and return the Expr object associated to the __RETURN__ dependency.
+        See details in `parse_function_body` docstring.
         """
 
-        dependencies: Dict[str, Expr] = {}
-        parameter_name = func_def_node.args.args[0].arg
-        dependencies[parameter_name] = ApplyFuncArg()
-
+        args = func_def_node.args.args
+        assert len(args) == len(args_expr)
+        dependencies: Dict[str, Expr] = dict(zip([arg.arg for arg in args], args_expr))
         dependencies = self.parse_function_body(func_def_node.body, dependencies)
-
         return dependencies["__RETURN__"]
 
     def parse_function_body(self, body: List[ast.stmt], dependencies: Dict[str, Expr]) -> Dict[str, Expr]:
@@ -445,6 +526,7 @@ def maybe_replace_apply_lambda_inplace(lines_of_code: List[str], apply_info: App
     """
 
     assert isinstance(apply_info.ast_func_expr, ast.Lambda)
+
     try:
         expr = parser.parse_lambda(apply_info.ast_func_expr)
     except NotImplementedError:
@@ -454,89 +536,10 @@ def maybe_replace_apply_lambda_inplace(lines_of_code: List[str], apply_info: App
     replace_apply_assignment_inplace(lines_of_code, vectorized_code, apply_info.start_lineno, apply_info.end_lineno)
 
 
-def maybe_replace_apply_package_func_inplace(
-    lines_of_code: List[str],
-    apply_info: ApplyInfo,
-    parser: FunctionBodyParser,
-):
-    """
-    Check whether the external package function called within `apply` is vectorizable,
-    and replace the corresponding assignment with vectorized code if possible.
-    """
-
-    assert isinstance(apply_info.ast_func_expr, ast.Attribute)
-
-    func_node = apply_info.ast_func_expr
-    if not isinstance(func_node.value, ast.Name):
-        return
-
-    alias = func_node.value.id
-    func_name = func_node.attr
-    if parser.is_replaceable_func(alias, func_name):
-        vectorized_code = f"{apply_info.assigned_var_name} = {alias}.{func_name}({apply_info.calling_var_name})"
-    elif parser.is_type_cast_func(alias, func_name):
-        vectorized_code = f"{apply_info.assigned_var_name} = {apply_info.calling_var_name}.astype({alias}.{func_name})"
-    else:
-        return
-
-    replace_apply_assignment_inplace(lines_of_code, vectorized_code, apply_info.start_lineno, apply_info.end_lineno)
-
-
-def maybe_replace_apply_udf_inplace(
-    lines_of_code: List[str],
-    func_def_node: ast.FunctionDef,
-    apply_info: ApplyInfo,
-    parser: FunctionBodyParser,
-):
-    """
-    Check whether the user defined function called within `apply` is vectorizable,
-    and replace the corresponding assignment with vectorized code if possible.
-    """
-
-    try:
-        expr = parser.parse_function_def(func_def_node)
-    except NotImplementedError:
-        return
-
-    vectorized_code = convert_expr_to_vectorized_code(
-        expr=expr,
-        calling_var_name=apply_info.calling_var_name,
-        assigned_var_name=apply_info.assigned_var_name,
-    )
-
-    replace_apply_assignment_inplace(lines_of_code, vectorized_code, apply_info.start_lineno, apply_info.end_lineno)
-
-    assert func_def_node.end_lineno is not None
-    flag_lines_to_remove_inplace(lines_of_code, func_def_node.lineno - 1, func_def_node.end_lineno)
-
-
-def replace_apply_type_cast(lines_of_code: List[str], apply_info: ApplyInfo):
-    """
-    Replace series.apply(type) into series.astype(type).
-    """
-
-    assert isinstance(apply_info.ast_func_expr, ast.Name)
-
-    type_ = apply_info.ast_func_expr.id
-    vectorized_code = f"{apply_info.assigned_var_name} = {apply_info.calling_var_name}.astype({type_})"
-    replace_apply_assignment_inplace(lines_of_code, vectorized_code, apply_info.start_lineno, apply_info.end_lineno)
-
-
 def replace_apply(input_code: str):
-    """
-    - Build the ast of input_code.
-    - Look for `apply` calls.
-      -> If the function applied is a lambda or a pandas/numpy function, it is directly replaced.
-      -> Otherwise the function called is stored, and its body is parsed afterwards.
-    - Parse the applied functions bodies, and generate the new code.
-    """
 
     statements = ast.parse(input_code).body
-
-    # Store funcs info used in apply: func_name -> (assigned_var_name, calling_var_name, apply_lineno, apply_end_lineno)
-    func_name_to_apply_info: Dict[str, ApplyInfo] = {}
-
-    parser = FunctionBodyParser()
+    parser = FunctionBodyParser(input_code)
 
     # Look either for pandas/numpy imports, or for assignment containing `apply` calls.
     lines = input_code.split("\n")
@@ -545,24 +548,29 @@ def replace_apply(input_code: str):
             parser.pandas_alias = [pandas_alias]
         elif numpy_alias := get_package_alias(stmt, "numpy"):  # eg: import numpy as np
             parser.numpy_alias = [numpy_alias]
+        elif isinstance(stmt, ast.FunctionDef):
+            parser.udf_name_to_func_def_node[stmt.name] = stmt
         elif apply_info := get_assignment_apply_expr_info(stmt, input_code):  # eg: s = s.apply(...)
-            func_expr = apply_info.ast_func_expr
-            if isinstance(func_expr, ast.Lambda):  # eg: apply(lambda x: x+1)
+            if isinstance(apply_info.ast_func_expr, ast.Lambda):
                 maybe_replace_apply_lambda_inplace(lines, apply_info, parser)
-            elif isinstance(func_expr, ast.Attribute):  # eg: apply(pd.isna)
-                maybe_replace_apply_package_func_inplace(lines, apply_info, parser)
-            elif isinstance(func_expr, ast.Name):  # eg: apply(func)
-                if func_expr.id in NATIVE_TYPE_FUNCS:
-                    replace_apply_type_cast(lines, apply_info)
-                else:
-                    # Keep the name of the udf applied, and we will resolve the function return expression afterwards.
-                    func_name_to_apply_info[func_expr.id] = apply_info
+            elif isinstance(apply_info.ast_func_expr, ast.Name):
+                # Artificially create a lambda expr node then resolve this lambda expression.
+                func_name = apply_info.ast_func_expr.id
+                lambda_str = f"lambda x: {func_name}(x)"
+                apply_info.ast_func_expr = ast.parse(lambda_str).body[0].value
+                maybe_replace_apply_lambda_inplace(lines, apply_info, parser)
 
-    # Resolve the statements of functions applied, and replace the `apply` accordingly if possible.
-    if len(func_name_to_apply_info) > 0:
-        for stmt in statements:
-            if isinstance(stmt, ast.FunctionDef) and stmt.name in func_name_to_apply_info:
-                maybe_replace_apply_udf_inplace(lines, stmt, func_name_to_apply_info[stmt.name], parser)
+                # Remove the UDF definition
+                if func_name in parser.udf_name_to_func_def_node:
+                    udf_def_node = parser.udf_name_to_func_def_node[func_name]
+                    assert udf_def_node.end_lineno is not None
+                    flag_lines_to_remove_inplace(lines, udf_def_node.lineno - 1, udf_def_node.end_lineno)
+
+            elif isinstance(apply_info.ast_func_expr, ast.Attribute):
+                # Artificially create a lambda expr node then resolve this lambda expression.
+                lambda_str = f"lambda x: {ast.get_source_segment(input_code, apply_info.ast_func_expr)}(x)"
+                apply_info.ast_func_expr = ast.parse(lambda_str).body[0].value
+                maybe_replace_apply_lambda_inplace(lines, apply_info, parser)
 
     # Remove lines corresponding to functions definitions. We remove them at the end
     # otherwise apply locations would not be relevant anymore.
