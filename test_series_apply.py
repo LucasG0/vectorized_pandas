@@ -386,3 +386,41 @@ class TestReplaceApplyConditionalFunctions:
     )
     def test_multiple_returns(self, input_code, expected_code):
         compare(input_code, expected_code)
+
+
+class TestReplaceApplyDataFrame:
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+                def func(row):
+                    a = row["col1"]
+                    b = row["col2] * 2
+                    return a + b
+                df["col3"] = df.apply(func, axis=1)
+                """,
+                """
+                df["col3"] = df["col1"] + (df["col2"] * 2)
+                """,
+            ),
+            (
+                """
+            def func(row):
+                if row["col1"] == 1:
+                    res = "A"
+                elif row["col2"] == 2:
+                    res = "B"
+                else:
+                    res = "C"
+                return res
+            df = df.apply(func, axis=1)
+            """,
+                """
+            s = np.select(conditions=[(df["col1"] == 1), (df["col2"] == 2)], choices=["A", "B"], default="C")
+            """,
+            ),
+        ],
+    )
+    def test_simple_conditions(self, input_code, expected_code):
+        compare(input_code, expected_code)
