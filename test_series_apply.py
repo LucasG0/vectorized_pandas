@@ -128,14 +128,14 @@ class TestReplaceApplySimpleFunctions:
                 import pandas as pd
                 import numpy as np
                 def func(val):
-                    res = val + 1
-                    return np.isnan(pd.isna(res) * 2)
+                    res = np.log(val) + 1
+                    return np.isnan(pd.isna(res) * np.exp(2))
                 s = s.apply(func)
                 """,
                 """
                 import pandas as pd
                 import numpy as np
-                s = np.isnan(pd.isna(s + 1) * 2)
+                s = np.isnan(pd.isna(np.log(s) + 1) * np.exp(2))
                 """,
             ),
         ],

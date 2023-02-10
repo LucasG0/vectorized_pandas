@@ -54,7 +54,43 @@ DEFAULT_PANDAS_ALIAS = ["pandas", "pd"]
 DEFAULT_NUMPY_ALIAS = ["numpy", "np"]
 
 REPLACEABLE_PANDAS_FUNCS = {"isna", "isnull"}
-REPLACEABLE_NUMPY_FUNCS = {"isnan"}
+REPLACEABLE_NUMPY_FUNCS = {
+    "isnan",
+    "sin",
+    "cos",
+    "tan",
+    "arcsin",
+    "arccos",
+    "arctan",
+    "hypot",
+    "arctan2",
+    "degrees",
+    "radians",
+    "sinh",
+    "cosh",
+    "tanh",
+    "arcsinh",
+    "arctanh",
+    "around",
+    "rint",
+    "fix",
+    "floor",
+    "ceil",
+    "trunc",
+    "exp",
+    "expm1",
+    "exp2",
+    "log",
+    "log10",
+    "log2",
+    "log1p",
+    "abs",
+    "absolute",
+    "square",
+    "sqrt",
+    "clip",
+    "sign",
+}
 
 NATIVE_TYPE_FUNCS = ["int", "str", "float", "bool"]
 NUMPY_TYPE_FUNCS = [
