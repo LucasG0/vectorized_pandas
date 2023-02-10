@@ -232,8 +232,34 @@ class TestReplaceApplySimpleFunctions:
             ),
         ],
     )
-    # TODO atm we replace on "top
     def test_str_methods(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+                    def nested_func(x):
+                        return x + 1
+
+                    def func(val):
+                        a = val + 2
+                        return nested_func(a)
+
+                    s = s.apply(func)
+                """,
+                """
+                    def nested_func(x):
+                        return x + 1
+
+
+                    s = (s + 2) + 1
+                """,
+            ),
+        ],
+    )
+    def test_nested_func(self, input_code, expected_code):
         compare(input_code, expected_code)
 
 

@@ -76,8 +76,6 @@ NUMPY_TYPE_FUNCS = [
     "str",
 ]
 
-# TODO important that work differently: 'contains', 'join'
-# Others: 'extract', 'extractall', 'findall', 'fullmatch', 'get', 'get_dummies', match', 'normalize', 'pad',  'repeat', 'wrap'
 STR_METHODS = [
     "capitalize",
     "casefold",
@@ -557,7 +555,9 @@ def replace_apply(input_code: str):
                 # Artificially create a lambda expr node then resolve this lambda expression.
                 func_name = apply_info.ast_func_expr.id
                 lambda_str = f"lambda x: {func_name}(x)"
-                apply_info.ast_func_expr = ast.parse(lambda_str).body[0].value
+                expr_node = ast.parse(lambda_str).body[0]
+                assert isinstance(expr_node, ast.Expr)
+                apply_info.ast_func_expr = expr_node.value
                 maybe_replace_apply_lambda_inplace(lines, apply_info, parser)
 
                 # Remove the UDF definition
@@ -569,7 +569,9 @@ def replace_apply(input_code: str):
             elif isinstance(apply_info.ast_func_expr, ast.Attribute):
                 # Artificially create a lambda expr node then resolve this lambda expression.
                 lambda_str = f"lambda x: {ast.get_source_segment(input_code, apply_info.ast_func_expr)}(x)"
-                apply_info.ast_func_expr = ast.parse(lambda_str).body[0].value
+                expr_node = ast.parse(lambda_str).body[0]
+                assert isinstance(expr_node, ast.Expr)
+                apply_info.ast_func_expr = expr_node.value
                 maybe_replace_apply_lambda_inplace(lines, apply_info, parser)
 
     # Remove lines corresponding to functions definitions. We remove them at the end
