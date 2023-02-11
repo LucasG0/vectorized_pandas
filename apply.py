@@ -8,6 +8,7 @@ from typing import Dict, List, Literal, Optional
 from expression import (
     Alias,
     ApplyFuncArg,
+    ApplyFuncArgColumn,
     BinaryBooleanExpr,
     BinaryOp,
     Conditional,
@@ -218,6 +219,14 @@ class FunctionBodyParser:
             pd_symbol=get_comp_symbol(compare_node.ops[0]),
         )
 
+    def _resolve_subscript(self, subscript_node: ast.Subscript, dependencies: Dict[str, Expr]) -> ApplyFuncArgColumn:
+        attr = subscript_node.value
+        if isinstance(attr, ast.Name) and isinstance(dependencies[attr.id], ApplyFuncArg):
+            if isinstance(subscript_node.slice, ast.Constant):
+                # Do not use subscript_node.slice.value as it removes quotes from string constant.
+                return ApplyFuncArgColumn(ast.get_source_segment(self.input_code, subscript_node.slice))  # type: ignore[arg-type]
+        raise NotImplementedError(f"{subscript_node=}")
+
     def _resolve_call(self, call_node: ast.Call, dependencies: Dict[str, Expr]) -> Expr:
         """
         Multiple cases to handle:
@@ -261,7 +270,7 @@ class FunctionBodyParser:
                 if alias in self.numpy_alias and func_name in NUMPY_TYPE_FUNCS and len(args_expr) == 1:
                     return TypeCastFuncCall(alias=alias, func_name=func_name, param=args_expr[0])
 
-        raise NotImplementedError()
+        raise NotImplementedError(f"{call_node=}")
 
     def _resolve_expr(self, expr_node: Optional[ast.expr], dependencies: Dict[str, Expr]) -> Expr:
         """
@@ -287,7 +296,10 @@ class FunctionBodyParser:
         if isinstance(expr_node, ast.Call):
             return self._resolve_call(expr_node, dependencies)
 
-        raise NotImplementedError(type(expr_node))
+        if isinstance(expr_node, ast.Subscript):
+            return self._resolve_subscript(expr_node, dependencies)
+
+        raise NotImplementedError(f"{expr_node}=")
 
     def _parse_function_def(self, func_def_node: ast.FunctionDef, args_expr: List[Expr]) -> Expr:
         """
@@ -513,6 +525,36 @@ def flag_lines_to_remove_inplace(lines_of_code: List[str], start_line: int, end_
         lines_of_code[i] = None  # type: ignore
 
 
+def is_vectorisable_apply_call(call_node: ast.Call) -> bool:
+    """
+    Check whether the call is a call to `apply`, and tries to determine whether the call
+    is performed on DataFrame with axis=0 (implicit or not) in which case we should not vectorize the `apply` call.
+    """
+
+    if not (isinstance(call_node.func, ast.Attribute) and call_node.func.attr == "apply"):
+        return False
+
+    for keyword in call_node.keywords:
+        if keyword.arg == "axis" and isinstance(keyword.value, ast.Constant):  # Dynamic axis parameter unsupported
+            if keyword.value.value in [1, "columns"]:
+                return True
+            if keyword.value.value in [0, "index"]:
+                return False
+
+    # Here, we do not know whether `apply` is called on a Series or on DataFrame with implicit axis=0
+    # There is no way to be 100% sure of the input caller type, so make the following assumptions:
+    #  - Calls like `variable["str"].apply` are most likely Series calls.
+    #  - Calling variable names starting with "df" are most likely DataFrame calls.
+
+    if isinstance(call_node.func.value, ast.Subscript):
+        return True  # Most likely a Series call
+
+    if isinstance(call_node.func.value, ast.Name) and call_node.func.value.id.startswith("df"):
+        return False  # Most likely a DataFrame call
+
+    return True  # Otherwise, assume it is a Series call.
+
+
 def get_assignment_apply_expr_info(stmt: ast.stmt, input_code: str) -> Optional[ApplyInfo]:
     """
     Check whether a statement is an assignment which right hand side is a call to `apply` method,
@@ -522,24 +564,26 @@ def get_assignment_apply_expr_info(stmt: ast.stmt, input_code: str) -> Optional[
     if not isinstance(stmt, ast.Assign):
         return None
 
-    right = stmt.value
-    if not isinstance(right, ast.Call):
+    call_node = stmt.value
+    if not isinstance(call_node, ast.Call):
         return None
 
-    if not (isinstance(right.func, ast.Attribute) and right.func.attr == "apply"):
+    if not is_vectorisable_apply_call(call_node):
         return None
 
     assert len(stmt.targets) == 1
+    assert isinstance(call_node.func, ast.Attribute)
 
     assigned_var_name = ast.get_source_segment(input_code, stmt.targets[0])
-    calling_var_name = ast.get_source_segment(input_code, right.func.value)
+    calling_var_name = ast.get_source_segment(input_code, call_node.func.value)
 
-    for keyword in right.keywords:
+    # 'func' parameter is either passed as kwarg or arg.
+    for keyword in call_node.keywords:
         if keyword.arg == "func":
             func_expr = keyword.value
             break
     else:
-        func_expr = right.args[0]
+        func_expr = call_node.args[0]
 
     assert assigned_var_name is not None and calling_var_name is not None
     assert stmt.end_lineno is not None

@@ -70,6 +70,28 @@ class ApplyFuncArg(Expr):
 
 
 @dataclass
+class ApplyFuncArgColumn(Expr):
+    """
+    Identifies a column access from the input row parameter of the function applied. We need to differentiate it from regular variables
+    as it will be converted to the variable name with corresponding column access calling `apply` when vectorizing.
+
+    eg:
+    def func(row):
+      return row["a"] + 1  # identifies row["a"]
+    """
+
+    column_name: str
+
+    def to_vectorized_code(self) -> str:
+        """
+        A function return expression should be resolvable without knowing the context of where it is called, thus
+        here we ignore the variable name calling `apply`, so we put a sentinel value that will be replace afterwards.
+        """
+
+        return TO_REPLACE_BY_VAR_NAME + "[" + self.column_name + "]"
+
+
+@dataclass
 class Conditional(Expr):
     """
     Represent an expression which value depends on at least one condition. If the expression depends on
@@ -206,7 +228,7 @@ def remove_extra_parenthesis(expr_code: str) -> str:
     return expr_code
 
 
-def convert_expr_to_vectorized_code(expr: Expr, calling_var_name: str, assigned_var_name: str) -> str:
+def convert_expr_to_vectorized_code(expr: Expr, assigned_var_name: str, calling_var_name: str) -> str:
     """
     Generate the new vectorized code that will replace the `apply` call.
     """
