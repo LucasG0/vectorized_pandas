@@ -8,6 +8,7 @@ from typing import Dict, List, Literal, Optional
 from expression import (
     Alias,
     ApplyFuncArg,
+    ApplyFuncArgColumn,
     BinaryBooleanExpr,
     BinaryOp,
     Conditional,
@@ -191,7 +192,7 @@ class FunctionBodyParser:
         self.pandas_alias = DEFAULT_PANDAS_ALIAS
         self.numpy_alias = DEFAULT_NUMPY_ALIAS
 
-    def is_external_package_func(self, alias: Optional[str], func_name: str) -> bool:
+    def _is_external_package_func(self, alias: Optional[str], func_name: str) -> bool:
         if alias is None:
             return False
 
@@ -218,6 +219,14 @@ class FunctionBodyParser:
             pd_symbol=get_comp_symbol(compare_node.ops[0]),
         )
 
+    def _resolve_subscript(self, subscript_node: ast.Subscript, dependencies: Dict[str, Expr]) -> ApplyFuncArgColumn:
+        attr = subscript_node.value
+        if isinstance(attr, ast.Name) and isinstance(dependencies[attr.id], ApplyFuncArg):
+            if isinstance(subscript_node.slice, ast.Constant):
+                # Do not use subscript_node.slice.value as it removes quotes from string constant.
+                return ApplyFuncArgColumn(ast.get_source_segment(self.input_code, subscript_node.slice))  # type: ignore[arg-type]
+        raise NotImplementedError(f"{subscript_node=}")
+
     def _resolve_call(self, call_node: ast.Call, dependencies: Dict[str, Expr]) -> Expr:
         """
         Multiple cases to handle:
@@ -236,7 +245,7 @@ class FunctionBodyParser:
                 return TypeCastFuncCall(alias=None, func_name=func.id, param=args_expr[0])
 
             if func.id in self.udf_name_to_func_def_node:
-                return self.parse_function_def(self.udf_name_to_func_def_node[func.id], args_expr)
+                return self._parse_function_def(self.udf_name_to_func_def_node[func.id], args_expr)
 
         if isinstance(func, ast.Attribute):
             caller_expr = self._resolve_expr(func.value, dependencies)
@@ -251,7 +260,7 @@ class FunctionBodyParser:
 
             if isinstance(caller_expr, Alias):
                 alias = caller_expr.name
-                if self.is_external_package_func(alias, func_name):
+                if self._is_external_package_func(alias, func_name):
                     return TrivialFuncCall(
                         alias=alias,
                         func_name=func_name,
@@ -261,7 +270,7 @@ class FunctionBodyParser:
                 if alias in self.numpy_alias and func_name in NUMPY_TYPE_FUNCS and len(args_expr) == 1:
                     return TypeCastFuncCall(alias=alias, func_name=func_name, param=args_expr[0])
 
-        raise NotImplementedError()
+        raise NotImplementedError(f"{call_node=}")
 
     def _resolve_expr(self, expr_node: Optional[ast.expr], dependencies: Dict[str, Expr]) -> Expr:
         """
@@ -287,9 +296,12 @@ class FunctionBodyParser:
         if isinstance(expr_node, ast.Call):
             return self._resolve_call(expr_node, dependencies)
 
-        raise NotImplementedError(type(expr_node))
+        if isinstance(expr_node, ast.Subscript):
+            return self._resolve_subscript(expr_node, dependencies)
 
-    def parse_function_def(self, func_def_node: ast.FunctionDef, args_expr: List[Expr]) -> Expr:
+        raise NotImplementedError(f"{expr_node}=")
+
+    def _parse_function_def(self, func_def_node: ast.FunctionDef, args_expr: List[Expr]) -> Expr:
         """
         Initiate the parsing of the function body, and return the Expr object associated to the __RETURN__ dependency.
         See details in `parse_function_body` docstring.
@@ -298,10 +310,10 @@ class FunctionBodyParser:
         args = func_def_node.args.args
         assert len(args) == len(args_expr)
         dependencies: Dict[str, Expr] = dict(zip([arg.arg for arg in args], args_expr))
-        dependencies = self.parse_function_body(func_def_node.body, dependencies)
+        dependencies = self._parse_function_body(func_def_node.body, dependencies)
         return dependencies["__RETURN__"]
 
-    def parse_function_body(self, body: List[ast.stmt], dependencies: Dict[str, Expr]) -> Dict[str, Expr]:
+    def _parse_function_body(self, body: List[ast.stmt], dependencies: Dict[str, Expr]) -> Dict[str, Expr]:
         """
         Iterate over a list of statements and return ONLY the new dependencies mapping created during these statements.
         It is useful to return only the new dependencies, as if we are parsing the body of an IF statement,
@@ -332,11 +344,11 @@ class FunctionBodyParser:
         new_dependencies = {}
         for stmt in body:
             if isinstance(stmt, ast.Assign):
-                resolved_assign = self.parse_function_assign(stmt, dependencies)
+                resolved_assign = self._parse_function_assign(stmt, dependencies)
                 dependencies[resolved_assign.var_name] = resolved_assign.expr
                 new_dependencies[resolved_assign.var_name] = resolved_assign.expr
             elif isinstance(stmt, ast.AugAssign):
-                resolved_assign = self.parse_function_aug_assign(stmt, dependencies)
+                resolved_assign = self._parse_function_aug_assign(stmt, dependencies)
                 dependencies[resolved_assign.var_name] = resolved_assign.expr
                 new_dependencies[resolved_assign.var_name] = resolved_assign.expr
             elif isinstance(stmt, ast.Return):
@@ -360,9 +372,9 @@ class FunctionBodyParser:
                     #  the same than in "new_dependencies" (who knows what happens in "merge_dependencies" ?)
 
             elif isinstance(stmt, ast.If):
-                if_else_dependencies = self.parse_if_else(stmt, dependencies)
-                dependencies = self.merge_dependencies(dependencies, if_else_dependencies)  # type: ignore[arg-type]
-                new_dependencies = self.merge_dependencies(
+                if_else_dependencies = self._parse_if_else(stmt, dependencies)
+                dependencies = self._merge_dependencies(dependencies, if_else_dependencies)  # type: ignore[arg-type]
+                new_dependencies = self._merge_dependencies(
                     new_dependencies, if_else_dependencies  # type: ignore[arg-type]
                 )
             else:
@@ -371,7 +383,7 @@ class FunctionBodyParser:
         return new_dependencies
 
     @staticmethod
-    def merge_dependencies(old_dependencies: Dict[str, Expr], new_dependencies: Dict[str, Expr]) -> Dict[str, Expr]:
+    def _merge_dependencies(old_dependencies: Dict[str, Expr], new_dependencies: Dict[str, Expr]) -> Dict[str, Expr]:
         """
         For a common dependency between the old ones and the new ones:
         - If the new dependency is a conditional and the else is empty, the else becomes the old dependency
@@ -392,7 +404,7 @@ class FunctionBodyParser:
 
         return result_dependencies
 
-    def parse_if_else(self, if_node: ast.If, dependencies: Dict[str, Expr]) -> Dict[str, Conditional]:
+    def _parse_if_else(self, if_node: ast.If, dependencies: Dict[str, Expr]) -> Dict[str, Conditional]:
         """
         Parse a IF statement, and returns the dependencies created within the if/elif/else blocks.
 
@@ -402,8 +414,8 @@ class FunctionBodyParser:
         """
 
         condition = self._resolve_expr(if_node.test, dependencies)
-        if_dependencies = self.parse_function_body(if_node.body, dependencies)
-        else_dependencies = self.parse_function_body(if_node.orelse, dependencies)
+        if_dependencies = self._parse_function_body(if_node.body, dependencies)
+        else_dependencies = self._parse_function_body(if_node.orelse, dependencies)
 
         result_dependencies = {}
 
@@ -434,7 +446,7 @@ class FunctionBodyParser:
 
         return result_dependencies
 
-    def parse_function_assign(self, assign_node: ast.Assign, dependencies: Dict[str, Expr]):
+    def _parse_function_assign(self, assign_node: ast.Assign, dependencies: Dict[str, Expr]):
         if len(assign_node.targets) > 1:
             raise NotImplementedError("Multiple assignments")
 
@@ -447,7 +459,7 @@ class FunctionBodyParser:
         expr: Expr = self._resolve_expr(right, dependencies)
         return ResolvedAssign(var_name=target.id, expr=expr)
 
-    def parse_function_aug_assign(self, aug_assign_node: ast.AugAssign, dependencies: Dict[str, Expr]):
+    def _parse_function_aug_assign(self, aug_assign_node: ast.AugAssign, dependencies: Dict[str, Expr]):
         if not isinstance(aug_assign_node.target, ast.Name):
             raise NotImplementedError("Assignment to a non-name target")
 
@@ -513,6 +525,36 @@ def flag_lines_to_remove_inplace(lines_of_code: List[str], start_line: int, end_
         lines_of_code[i] = None  # type: ignore
 
 
+def is_vectorisable_apply_call(call_node: ast.Call) -> bool:
+    """
+    Check whether the call is a call to `apply`, and tries to determine whether the call
+    is performed on DataFrame with axis=0 (implicit or not) in which case we should not vectorize the `apply` call.
+    """
+
+    if not (isinstance(call_node.func, ast.Attribute) and call_node.func.attr == "apply"):
+        return False
+
+    for keyword in call_node.keywords:
+        if keyword.arg == "axis" and isinstance(keyword.value, ast.Constant):  # Dynamic axis parameter unsupported
+            if keyword.value.value in [1, "columns"]:
+                return True
+            if keyword.value.value in [0, "index"]:
+                return False
+
+    # Here, we do not know whether `apply` is called on a Series or on DataFrame with implicit axis=0
+    # There is no way to be 100% sure of the input caller type, so make the following assumptions:
+    #  - Calls like `variable["str"].apply` are most likely Series calls.
+    #  - Calling variable names starting with "df" are most likely DataFrame calls.
+
+    if isinstance(call_node.func.value, ast.Subscript):
+        return True  # Most likely a Series call
+
+    if isinstance(call_node.func.value, ast.Name) and call_node.func.value.id.startswith("df"):
+        return False  # Most likely a DataFrame call
+
+    return True  # Otherwise, assume it is a Series call.
+
+
 def get_assignment_apply_expr_info(stmt: ast.stmt, input_code: str) -> Optional[ApplyInfo]:
     """
     Check whether a statement is an assignment which right hand side is a call to `apply` method,
@@ -522,24 +564,26 @@ def get_assignment_apply_expr_info(stmt: ast.stmt, input_code: str) -> Optional[
     if not isinstance(stmt, ast.Assign):
         return None
 
-    right = stmt.value
-    if not isinstance(right, ast.Call):
+    call_node = stmt.value
+    if not isinstance(call_node, ast.Call):
         return None
 
-    if not (isinstance(right.func, ast.Attribute) and right.func.attr == "apply"):
+    if not is_vectorisable_apply_call(call_node):
         return None
 
     assert len(stmt.targets) == 1
+    assert isinstance(call_node.func, ast.Attribute)
 
     assigned_var_name = ast.get_source_segment(input_code, stmt.targets[0])
-    calling_var_name = ast.get_source_segment(input_code, right.func.value)
+    calling_var_name = ast.get_source_segment(input_code, call_node.func.value)
 
-    for keyword in right.keywords:
+    # 'func' parameter is either passed as kwarg or arg.
+    for keyword in call_node.keywords:
         if keyword.arg == "func":
             func_expr = keyword.value
             break
     else:
-        func_expr = right.args[0]
+        func_expr = call_node.args[0]
 
     assert assigned_var_name is not None and calling_var_name is not None
     assert stmt.end_lineno is not None
@@ -553,7 +597,7 @@ def get_assignment_apply_expr_info(stmt: ast.stmt, input_code: str) -> Optional[
     )
 
 
-def maybe_replace_apply_lambda_inplace(lines_of_code: List[str], apply_info: ApplyInfo, parser: FunctionBodyParser):
+def try_replace_apply_lambda_inplace(lines_of_code: List[str], apply_info: ApplyInfo, parser: FunctionBodyParser):
     """
     Resolve a lambda expression within an `apply` call, and replace the corresponding assignment
     with vectorized code if possible.
@@ -568,6 +612,22 @@ def maybe_replace_apply_lambda_inplace(lines_of_code: List[str], apply_info: App
 
     vectorized_code = convert_expr_to_vectorized_code(expr, apply_info.assigned_var_name, apply_info.calling_var_name)
     replace_apply_assignment_inplace(lines_of_code, vectorized_code, apply_info.start_lineno, apply_info.end_lineno)
+
+
+def try_replace_apply_func_inplace(
+    lines_of_code: List[str], apply_info: ApplyInfo, func_name: str, parser: FunctionBodyParser
+):
+    """
+    Build a lambda expression for a func name (eg: apply(pd.isna) -> apply(lambda x: pd.isna(x)), resolve this
+    lambda expression and replace the apply assignment by vectorized operations if possible.
+    """
+
+    lambda_str = f"lambda x: {func_name}(x)"
+    expr_node = ast.parse(lambda_str).body[0]
+    assert isinstance(expr_node, ast.Expr)
+    apply_info.ast_func_expr = expr_node.value
+
+    try_replace_apply_lambda_inplace(lines_of_code, apply_info, parser)
 
 
 def replace_apply(input_code: str):
@@ -586,29 +646,18 @@ def replace_apply(input_code: str):
             parser.udf_name_to_func_def_node[stmt.name] = stmt
         elif apply_info := get_assignment_apply_expr_info(stmt, input_code):  # eg: s = s.apply(...)
             if isinstance(apply_info.ast_func_expr, ast.Lambda):
-                maybe_replace_apply_lambda_inplace(lines, apply_info, parser)
+                try_replace_apply_lambda_inplace(lines, apply_info, parser)
+            elif isinstance(apply_info.ast_func_expr, ast.Attribute):
+                func_name = ast.get_source_segment(input_code, apply_info.ast_func_expr)
+                try_replace_apply_func_inplace(lines, apply_info, func_name, parser)  # type: ignore[arg-type]
             elif isinstance(apply_info.ast_func_expr, ast.Name):
-                # Artificially create a lambda expr node then resolve this lambda expression.
                 func_name = apply_info.ast_func_expr.id
-                lambda_str = f"lambda x: {func_name}(x)"
-                expr_node = ast.parse(lambda_str).body[0]
-                assert isinstance(expr_node, ast.Expr)
-                apply_info.ast_func_expr = expr_node.value
-                maybe_replace_apply_lambda_inplace(lines, apply_info, parser)
-
+                try_replace_apply_func_inplace(lines, apply_info, func_name, parser)
                 # Remove the UDF definition
                 if func_name in parser.udf_name_to_func_def_node:
                     udf_def_node = parser.udf_name_to_func_def_node[func_name]
                     assert udf_def_node.end_lineno is not None
                     flag_lines_to_remove_inplace(lines, udf_def_node.lineno - 1, udf_def_node.end_lineno)
-
-            elif isinstance(apply_info.ast_func_expr, ast.Attribute):
-                # Artificially create a lambda expr node then resolve this lambda expression.
-                lambda_str = f"lambda x: {ast.get_source_segment(input_code, apply_info.ast_func_expr)}(x)"
-                expr_node = ast.parse(lambda_str).body[0]
-                assert isinstance(expr_node, ast.Expr)
-                apply_info.ast_func_expr = expr_node.value
-                maybe_replace_apply_lambda_inplace(lines, apply_info, parser)
 
     # Remove lines corresponding to functions definitions. We remove them at the end
     # otherwise apply locations would not be relevant anymore.
