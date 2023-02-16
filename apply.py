@@ -224,8 +224,14 @@ class FunctionBodyParser:
         if isinstance(attr, ast.Name) and isinstance(dependencies[attr.id], ApplyFuncArg):
             if isinstance(subscript_node.slice, ast.Constant):
                 # Do not use subscript_node.slice.value as it removes quotes from string constant.
-                return ApplyFuncArgColumn(ast.get_source_segment(self.input_code, subscript_node.slice))  # type: ignore[arg-type]
+                return ApplyFuncArgColumn(ast.get_source_segment(self.input_code, subscript_node.slice), dot_notation=False)  # type: ignore[arg-type]
         raise NotImplementedError(f"{subscript_node=}")
+
+    def _resolve_attribute(self, attribute_node: ast.Attribute, dependencies: Dict[str, Expr]) -> ApplyFuncArgColumn:
+        attr = attribute_node.value
+        if isinstance(attr, ast.Name) and isinstance(dependencies[attr.id], ApplyFuncArg):
+            return ApplyFuncArgColumn(attribute_node.attr, dot_notation=True)
+        raise NotImplementedError(f"{attribute_node=}")
 
     def _resolve_call(self, call_node: ast.Call, dependencies: Dict[str, Expr]) -> Expr:
         """
@@ -298,6 +304,9 @@ class FunctionBodyParser:
 
         if isinstance(expr_node, ast.Subscript):
             return self._resolve_subscript(expr_node, dependencies)
+
+        if isinstance(expr_node, ast.Attribute):
+            return self._resolve_attribute(expr_node, dependencies)
 
         raise NotImplementedError(f"{expr_node}=")
 

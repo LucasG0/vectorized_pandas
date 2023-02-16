@@ -482,3 +482,31 @@ class TestReplaceApplyDataFrame:
     )
     def test_df_column_apply(self, input_code, expected_code):
         compare(input_code, expected_code)
+
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+                def func(val):
+                    return val + 1
+                df.col3 = df.col1.apply(func)
+                """,
+                """
+                df.col3 = df.col1 + 1
+                """,
+            ),
+            (
+                """
+                def func(row):
+                    return row.col1 + row["col2"]
+                df.col3 = df.apply(func, axis=1)
+                """,
+                """
+                df.col3 = df.col1 + df["col2"]
+                """,
+            ),
+        ],
+    )
+    def test_df_dot_notation(self, input_code, expected_code):
+        compare(input_code, expected_code)

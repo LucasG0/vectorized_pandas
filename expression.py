@@ -81,6 +81,7 @@ class ApplyFuncArgColumn(Expr):
     """
 
     column_name: str
+    dot_notation: bool
 
     def to_vectorized_code(self) -> str:
         """
@@ -88,6 +89,8 @@ class ApplyFuncArgColumn(Expr):
         here we ignore the variable name calling `apply`, so we put a sentinel value that will be replace afterwards.
         """
 
+        if self.dot_notation:
+            return TO_REPLACE_BY_VAR_NAME + "." + self.column_name
         return TO_REPLACE_BY_VAR_NAME + "[" + self.column_name + "]"
 
 
