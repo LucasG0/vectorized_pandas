@@ -99,7 +99,7 @@ class Conditional(Expr):
     """
     Represent an expression which value depends on at least one condition. If the expression depends on
     multiple conditions, typically due to a if/elseif/else clauses, this is represented by a first Conditional object
-    holding the if condition as `condition` field, the corresponding expressionas `expr` field, and with a nested
+    holding the if condition as `condition` field, the corresponding expressions `expr` field, and with a nested
     Conditional object as the else_ clause. In this way, multiple elseif/else clauses are represented by multiple
     nested Conditional objects.
 
@@ -109,6 +109,7 @@ class Conditional(Expr):
     expr: Expr
     condition: Expr
     else_: Optional[Union[Conditional, Expr]]  # ie elsif/else/nothing
+    numpy_alias: str
 
     def get_conditions_and_choices_and_default(self, is_root: bool = False) -> Tuple[List[str], List[str], str]:
         """
@@ -154,7 +155,7 @@ class Conditional(Expr):
 
     def to_vectorized_code(self) -> str:
         conditions, choices, default = self.get_conditions_and_choices_and_default(is_root=True)
-        result = f"np.select(conditions=[{', '.join(conditions)}], choices=[{', '.join(choices)}], default={default})"
+        result = f"{self.numpy_alias}.select(conditions=[{', '.join(conditions)}], choices=[{', '.join(choices)}], default={default})"
         return result
 
 
