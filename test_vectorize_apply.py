@@ -278,6 +278,7 @@ class TestReplaceApplyConditionalFunctions:
             s = s.apply(func)
             """,
                 """
+            import numpy as np
             s = np.select(conditions=[(s == 1)], choices=["A"], default="C")
             """,
             ),
@@ -294,6 +295,7 @@ class TestReplaceApplyConditionalFunctions:
             s = s.apply(func)
             """,
                 """
+            import numpy as np
             s = np.select(conditions=[(s == 1), (s == 2)], choices=["A", "B"], default="C")
             """,
             ),
@@ -315,6 +317,7 @@ class TestReplaceApplyConditionalFunctions:
             s = s.apply(func)
             """,
                 """
+            import numpy as np
             s = np.select(conditions=[(s == 1)], choices=["B"], default="A")
             """,
             ),
@@ -357,6 +360,7 @@ class TestReplaceApplyConditionalFunctions:
             s = s.apply(func)
             """,
                 """
+            import numpy as np
             s = np.select(conditions=[(s == 1) & (s == 5), (s == 1) & ~((s == 5)), (s == 10)], choices=["A", "B", "C"], default="D")
             """,
             )
@@ -379,12 +383,53 @@ class TestReplaceApplyConditionalFunctions:
             s = s.apply(func)
             """,
                 """
+            import numpy as np
             s = np.select(conditions=[(s == 1), (s == 2)], choices=["B", "C"], default=s)
             """,
             )
         ],
     )
     def test_multiple_returns(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+            import numpy as np
+            def func(val):
+                if val == 1:
+                    res = "A"
+                else:
+                    res = "C"
+                return res
+            s = s.apply(func)
+            """,
+                """
+            import numpy as np
+            s = np.select(conditions=[(s == 1)], choices=["A"], default="C")
+            """,
+            ),
+            (
+                """
+            import numpy
+            def func(val):
+                if val == 1:
+                    res = "A"
+                else:
+                    res = "C"
+                return res
+            s = s.apply(func)
+            """,
+                """
+            import numpy
+            s = numpy.select(conditions=[(s == 1)], choices=["A"], default="C")
+            """,
+            ),
+        ],
+    )
+    def test_numpy_already_imported(self, input_code, expected_code):
         compare(input_code, expected_code)
 
 
@@ -457,6 +502,7 @@ class TestReplaceApplyDataFrame:
             df["col3"] = df.apply(func, axis=1)
             """,
                 """
+            import numpy as np
             df["col3"] = np.select(conditions=[(df["col1"] == 1), (df["col2"] == 2)], choices=["A", "B"], default="C")
             """,
             ),

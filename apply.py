@@ -50,9 +50,9 @@ def get_comp_symbol(operator: ast.cmpop) -> str:
     raise NotImplementedError(type(operator))
 
 
-# Default packages aliases if the input code omits the import line.
-DEFAULT_PANDAS_ALIAS = ["pandas", "pd"]
-DEFAULT_NUMPY_ALIAS = ["numpy", "np"]
+# Default packages alias if the input code omits the import line.
+DEFAULT_PANDAS_ALIAS = "pd"
+DEFAULT_NUMPY_ALIAS = "np"
 
 REPLACEABLE_PANDAS_FUNCS = {"isna", "isnull"}
 REPLACEABLE_NUMPY_FUNCS = {
@@ -183,8 +183,8 @@ class FunctionBodyParser:
     udf_name_to_func_def_node: Dict[str, ast.FunctionDef]
     input_code: str  # used for ast.get_source_segment
 
-    pandas_alias: List[str]
-    numpy_alias: List[str]
+    pandas_alias: str
+    numpy_alias: str
 
     def __init__(self, input_code: str):
         self.udf_name_to_func_def_node = {}
@@ -196,8 +196,8 @@ class FunctionBodyParser:
         if alias is None:
             return False
 
-        return (alias in self.pandas_alias and func_name in REPLACEABLE_PANDAS_FUNCS) or (
-            alias in self.numpy_alias and func_name in REPLACEABLE_NUMPY_FUNCS
+        return (alias == self.pandas_alias and func_name in REPLACEABLE_PANDAS_FUNCS) or (
+            alias == self.numpy_alias and func_name in REPLACEABLE_NUMPY_FUNCS
         )
 
     def _resolve_binary_op(self, binary_op_node: ast.BinOp, dependencies: Dict[str, Expr]) -> BinaryOp:
@@ -273,7 +273,7 @@ class FunctionBodyParser:
                         params=args_expr,
                     )
 
-                if alias in self.numpy_alias and func_name in NUMPY_TYPE_FUNCS and len(args_expr) == 1:
+                if alias == self.numpy_alias and func_name in NUMPY_TYPE_FUNCS and len(args_expr) == 1:
                     return TypeCastFuncCall(alias=alias, func_name=func_name, param=args_expr[0])
 
         raise NotImplementedError(f"{call_node=}")
@@ -289,7 +289,7 @@ class FunctionBodyParser:
             return Constant(expr_node.value)
 
         if isinstance(expr_node, ast.Name):
-            if expr_node.id in self.numpy_alias or expr_node.id in self.pandas_alias:
+            if expr_node.id == self.numpy_alias or expr_node.id == self.pandas_alias:
                 return Alias(expr_node.id)
             return dependencies[expr_node.id]
 
@@ -437,6 +437,7 @@ class FunctionBodyParser:
                 condition=condition,
                 expr=if_dependencies[var_name],
                 else_=conditional_or_expr,
+                numpy_alias=self.numpy_alias,
             )
             result_dependencies[var_name] = conditional
 
@@ -450,6 +451,7 @@ class FunctionBodyParser:
                 condition=NegateBooleanExpr(condition),
                 expr=else_dependencies[var_name],
                 else_=None,
+                numpy_alias=self.numpy_alias,
             )
             result_dependencies[var_name] = conditional
 
@@ -648,9 +650,9 @@ def replace_apply(input_code: str):
     lines = input_code.split("\n")
     for stmt in statements:
         if pandas_alias := get_package_alias(stmt, "pandas"):  # eg: import pandas as pd
-            parser.pandas_alias = [pandas_alias]
+            parser.pandas_alias = pandas_alias
         elif numpy_alias := get_package_alias(stmt, "numpy"):  # eg: import numpy as np
-            parser.numpy_alias = [numpy_alias]
+            parser.numpy_alias = numpy_alias
         elif isinstance(stmt, ast.FunctionDef):
             parser.udf_name_to_func_def_node[stmt.name] = stmt
         elif apply_info := get_assignment_apply_expr_info(stmt, input_code):  # eg: s = s.apply(...)
@@ -671,6 +673,25 @@ def replace_apply(input_code: str):
     # Remove lines corresponding to functions definitions. We remove them at the end
     # otherwise apply locations would not be relevant anymore.
     lines = [line for line in lines if line is not None]
+    output_code = "\n".join(lines)
 
-    result = "\n".join(lines)
-    return result
+    if should_import_numpy(output_code, parser.numpy_alias):
+        numpy_import = "import numpy" if parser.numpy_alias == "numpy" else f"import numpy as {parser.numpy_alias}"
+        output_code = numpy_import + "\n" + output_code
+
+    return output_code
+
+
+def should_import_numpy(output_code: str, numpy_alias: str) -> bool:
+    """
+    We might introduce a numpy dependency (`np.select`) when we meet conditional statements,
+    thus we should import numpy in this case if it is not already imported.
+    """
+
+    if f"{numpy_alias}.select" not in output_code:
+        return False
+    if numpy_alias == "numpy" and "import numpy" not in output_code:
+        return True
+    if numpy_alias != "numpy" and f"import numpy as {numpy_alias}" not in output_code:
+        return True
+    return False
