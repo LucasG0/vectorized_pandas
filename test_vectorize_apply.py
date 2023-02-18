@@ -361,7 +361,7 @@ class TestReplaceApplyConditionalFunctions:
             """,
                 """
             import numpy as np
-            s = np.select(conditions=[(s == 1) & (s == 5), (s == 1) & ~((s == 5)), (s == 10)], choices=["A", "B", "C"], default="D")
+            s = np.select(conditions=[(s == 1) & (s == 5), (s == 1), (s == 10)], choices=["A", "B", "C"], default="D")
             """,
             )
         ],
@@ -386,7 +386,85 @@ class TestReplaceApplyConditionalFunctions:
             import numpy as np
             s = np.select(conditions=[(s == 1), (s == 2)], choices=["B", "C"], default=s)
             """,
-            )
+            ),
+            (
+                """
+                def func(val):
+                    if val == 1:
+                        return "B"
+                    elif val == 2:
+                        return "C"
+                    else:
+                        return val
+                s = s.apply(func)
+                """,
+                """
+                import numpy as np
+                s = np.select(conditions=[(s == 1), (s == 2)], choices=["B", "C"], default=s)
+                """,
+            ),
+            (
+                """
+                def func(val):
+                    if val == 1:
+                        return "B"
+                    if val == 2:
+                        return "C"
+                    return val
+                s = s.apply(func)
+                """,
+                """
+                import numpy as np
+                s = np.select(conditions=[(s == 1), (s == 2)], choices=["B", "C"], default=s)
+                """,
+            ),
+            (
+                """
+                def func(row):
+                    if row["A"] == 1:
+                        if row["B"] == 1:
+                            return row["C"]
+                        else:
+                            return row["D"]
+                    else:
+                        if row["B"] == 2:
+                            return row["E"]
+                        else:
+                            return 0
+
+                df["H"] = df.apply(func, axis=1)
+                """,
+                """
+                import numpy as np
+
+                df["H"] = np.select(conditions=[(df["A"] == 1) & (df["B"] == 1), (df["A"] == 1), (df["B"] == 2)], choices=[df["C"], df["D"], df["E"]], default=0)
+                """,
+            ),
+            (
+                """
+                def func(row):
+                    if row["A"] != 0:
+                        if row["A"] == 1:
+                            if row["B"] == 2:
+                                return row["C"]
+                            else:
+                                return row["D"]
+                        else:
+                            if row["B"] == 3:
+                                return row["E"]
+                            else:
+                                return row["F"]
+                    else:
+                        return 0.0
+
+                df["H"] = df.apply(func, axis=1)
+                """,
+                """
+                import numpy as np
+
+                df["H"] = np.select(conditions=[(df["A"] != 0) & (df["A"] == 1) & (df["B"] == 2), (df["A"] != 0) & (df["A"] == 1), (df["A"] != 0) & (df["B"] == 3), (df["A"] != 0)], choices=[df["C"], df["D"], df["E"], df["F"]], default=0.0)
+                """,
+            ),
         ],
     )
     def test_multiple_returns(self, input_code, expected_code):
