@@ -308,6 +308,39 @@ class TestReplaceApplySimpleFunctions:
     def test_f_strings(self, input_code, expected_code):
         compare(input_code, expected_code)
 
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+            def func(val):
+                return val if val == 0 else 0
+            s = s.apply(func)
+            """,
+                """
+            import numpy as np
+            s = np.select(conditions=[(s == 0)], choices=[s], default=0)
+            """,
+            ),
+            (
+                """
+            def func(row):
+                a = "A" if row["col1"] == 0 else "B"
+                if row["col2"] == 1:
+                    return a
+                return "C"
+            s = df.apply(func, axis=1)
+            """,
+                """
+            import numpy as np
+            s = np.select(conditions=[(df["col2"] == 1) & (df["col1"] == 0), (df["col2"] == 1)], choices=["A", "B"], default="C")
+            """,
+            ),
+        ],
+    )
+    def test_if_expression(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
 
 class TestReplaceApplyConditionalFunctions:
     @pytest.mark.parametrize(

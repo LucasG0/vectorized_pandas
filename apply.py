@@ -246,6 +246,14 @@ class FunctionBodyParser:
         resolved_items = [self._resolve_expr(item, dependencies) for item in items]
         return FString(items=resolved_items)
 
+    def _resolve_if_expression(self, if_exp_node: ast.IfExp, dependencies: Dict[str, Expr]) -> Conditional:
+        return Conditional(
+            expr=self._resolve_expr(if_exp_node.body, dependencies),
+            condition=self._resolve_expr(if_exp_node.test, dependencies),
+            else_=self._resolve_expr(if_exp_node.orelse, dependencies),
+            numpy_alias=self.numpy_alias,
+        )
+
     def _resolve_call(self, call_node: ast.Call, dependencies: Dict[str, Expr]) -> Expr:
         """
         Multiple cases to handle:
@@ -327,6 +335,9 @@ class FunctionBodyParser:
 
         if isinstance(expr_node, ast.JoinedStr):
             return self._resolve_fstring(expr_node, dependencies)
+
+        if isinstance(expr_node, ast.IfExp):
+            return self._resolve_if_expression(expr_node, dependencies)
 
         raise NotImplementedError(f"{expr_node}=")
 
