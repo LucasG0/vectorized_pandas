@@ -278,6 +278,36 @@ class TestReplaceApplySimpleFunctions:
     def test_nested_func(self, input_code, expected_code):
         compare(input_code, expected_code)
 
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+            def func(val):
+                b = "b"
+                return f"{val}_{b}"
+            s = s.apply(func)
+            """,
+                """
+            s = s.astype(str) + "_" + "b"
+            """,
+            ),
+            (
+                """
+            def func(val):
+                a = 1
+                return f"_{val + 2}_{a}_"
+            s = s.apply(func)
+            """,
+                """
+            s = "_" + (s + 2).astype(str) + "_" + str(1) + "_"
+            """,
+            ),
+        ],
+    )
+    def test_f_strings(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
 
 class TestReplaceApplyConditionalFunctions:
     @pytest.mark.parametrize(
