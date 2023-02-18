@@ -14,6 +14,7 @@ from expression import (
     Conditional,
     Constant,
     Expr,
+    FString,
     NegateBooleanExpr,
     StrMethodCall,
     TrivialFuncCall,
@@ -235,6 +236,16 @@ class FunctionBodyParser:
             return ApplyFuncArgColumn(attribute_node.attr, dot_notation=True)
         raise NotImplementedError(f"{attribute_node=}")
 
+    def _resolve_fstring(self, fstring_node: ast.JoinedStr, dependencies: Dict[str, Expr]) -> FString:
+        for item in fstring_node.values:
+            if isinstance(item, ast.FormattedValue) and (item.conversion != -1 or item.format_spec is not None):
+                raise NotImplementedError("fstring `conversion` or `format_spec` is not supported")
+
+        # ast.JoinedStr.values contains a list of either ast.FormattedValue or ast.Constant
+        items = [item.value if isinstance(item, ast.FormattedValue) else item for item in fstring_node.values]
+        resolved_items = [self._resolve_expr(item, dependencies) for item in items]
+        return FString(items=resolved_items)
+
     def _resolve_call(self, call_node: ast.Call, dependencies: Dict[str, Expr]) -> Expr:
         """
         Multiple cases to handle:
@@ -313,6 +324,9 @@ class FunctionBodyParser:
 
         if isinstance(expr_node, ast.Attribute):
             return self._resolve_attribute(expr_node, dependencies)
+
+        if isinstance(expr_node, ast.JoinedStr):
+            return self._resolve_fstring(expr_node, dependencies)
 
         raise NotImplementedError(f"{expr_node}=")
 

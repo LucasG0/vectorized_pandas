@@ -50,6 +50,31 @@ class Alias(Expr):
 
 
 @dataclass
+class FString(Expr):
+    items: List[Expr]
+
+    def _format_item_code(self, item_code: str) -> str:
+        if TO_REPLACE_BY_VAR_NAME in item_code:
+            return f"{item_code}.astype(str)"
+        if not item_code.startswith('"') and not item_code.startswith("'"):
+            return f"str({item_code})"
+        return item_code
+
+    def to_vectorized_code(self) -> str:
+        """
+        Concatenate all expressions within the fstring, and perform an explicit cast to string dtype,
+        either by using `.astype(str)` for series expressions, or using `str(...)` for non-string scalars.
+        We assume as of writing that we can identify a series expression by checking
+        whether it contains a reference to the function parameter, ie TO_REPLACE_BY_VAR_NAME.
+        """
+
+        item_codes = [item.to_vectorized_code() for item in self.items]
+        item_codes = [self._format_item_code(item_code) for item_code in item_codes]
+
+        return " + ".join(item_codes)
+
+
+@dataclass
 class ApplyFuncArg(Expr):
     """
     Identifies the input parameter of the function applied. We need to differentiate it from regular variables
