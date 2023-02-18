@@ -42,7 +42,23 @@ class TestNoReplace:
             s = s.apply_func(func)
             print(s)
             """,
-            )
+            ),
+            (
+                """
+                import json
+                def func(row):
+                    return json.loads(row)
+
+                x = df.apply(func, axis=1)
+                """,
+                """
+                import json
+                def func(row):
+                    return json.loads(row)
+
+                x = df.apply(func, axis=1)
+                """,
+            ),
         ],
     )
     def test_no_replace(self, input_code, expected_code):

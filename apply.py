@@ -293,7 +293,11 @@ class FunctionBodyParser:
         if isinstance(expr_node, ast.Name):
             if expr_node.id == self.numpy_alias or expr_node.id == self.pandas_alias:
                 return Alias(expr_node.id)
-            return dependencies[expr_node.id]
+            try:
+                return dependencies[expr_node.id]
+            except KeyError:
+                # Could be an external module, a global variable (not supported as of writing)
+                raise NotImplementedError(f"Missing dependency {expr_node.id=}")
 
         if isinstance(expr_node, ast.BinOp):
             return self._resolve_binary_op(expr_node, dependencies)
@@ -623,21 +627,25 @@ def get_assignment_apply_expr_info(stmt: ast.stmt, input_code: str) -> Optional[
     )
 
 
-def try_replace_apply_lambda_inplace(lines_of_code: List[str], apply_info: ApplyInfo, parser: FunctionBodyParser):
+def try_replace_apply_lambda_inplace(
+    lines_of_code: List[str], apply_info: ApplyInfo, parser: FunctionBodyParser
+) -> bool:
     """
     Resolve a lambda expression within an `apply` call, and replace the corresponding assignment
-    with vectorized code if possible.
+    with vectorized code if possible. Return a boolean indicating whether some code has been replaced or not.
     """
 
     assert isinstance(apply_info.ast_func_expr, ast.Lambda)
 
-    # try:
-    expr = parser.parse_lambda(apply_info.ast_func_expr)
-    # except NotImplementedError:
-    #     return
+    try:
+        expr = parser.parse_lambda(apply_info.ast_func_expr)
+    except NotImplementedError:
+        return False
 
     vectorized_code = convert_expr_to_vectorized_code(expr, apply_info.assigned_var_name, apply_info.calling_var_name)
     replace_apply_assignment_inplace(lines_of_code, vectorized_code, apply_info.start_lineno, apply_info.end_lineno)
+
+    return True
 
 
 def try_replace_apply_func_inplace(
@@ -646,6 +654,7 @@ def try_replace_apply_func_inplace(
     """
     Build a lambda expression for a func name (eg: apply(pd.isna) -> apply(lambda x: pd.isna(x)), resolve this
     lambda expression and replace the apply assignment by vectorized operations if possible.
+    Return a boolean indicating whether some code has been replaced or not.
     """
 
     lambda_str = f"lambda x: {func_name}(x)"
@@ -653,7 +662,7 @@ def try_replace_apply_func_inplace(
     assert isinstance(expr_node, ast.Expr)
     apply_info.ast_func_expr = expr_node.value
 
-    try_replace_apply_lambda_inplace(lines_of_code, apply_info, parser)
+    return try_replace_apply_lambda_inplace(lines_of_code, apply_info, parser)
 
 
 def replace_apply(input_code: str):
@@ -672,15 +681,15 @@ def replace_apply(input_code: str):
             parser.udf_name_to_func_def_node[stmt.name] = stmt
         elif apply_info := get_assignment_apply_expr_info(stmt, input_code):  # eg: s = s.apply(...)
             if isinstance(apply_info.ast_func_expr, ast.Lambda):
-                try_replace_apply_lambda_inplace(lines, apply_info, parser)
+                _ = try_replace_apply_lambda_inplace(lines, apply_info, parser)
             elif isinstance(apply_info.ast_func_expr, ast.Attribute):
                 func_name = ast.get_source_segment(input_code, apply_info.ast_func_expr)
-                try_replace_apply_func_inplace(lines, apply_info, func_name, parser)  # type: ignore[arg-type]
+                _ = try_replace_apply_func_inplace(lines, apply_info, func_name, parser)  # type: ignore[arg-type]
             elif isinstance(apply_info.ast_func_expr, ast.Name):
                 func_name = apply_info.ast_func_expr.id
-                try_replace_apply_func_inplace(lines, apply_info, func_name, parser)
+                has_replaced = try_replace_apply_func_inplace(lines, apply_info, func_name, parser)
                 # Remove the UDF definition
-                if func_name in parser.udf_name_to_func_def_node:
+                if has_replaced and func_name in parser.udf_name_to_func_def_node:
                     udf_def_node = parser.udf_name_to_func_def_node[func_name]
                     assert udf_def_node.end_lineno is not None
                     flag_lines_to_remove_inplace(lines, udf_def_node.lineno - 1, udf_def_node.end_lineno)
