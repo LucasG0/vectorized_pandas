@@ -39,6 +39,8 @@ def get_op_symbol(operator: ast.operator) -> str:
 def get_comp_symbol(operator: ast.cmpop) -> str:
     if isinstance(operator, ast.Eq):
         return "=="
+    if isinstance(operator, ast.NotEq):
+        return "!="
     if isinstance(operator, ast.Gt):
         return ">"
     if isinstance(operator, ast.GtE):
@@ -319,10 +321,12 @@ class FunctionBodyParser:
         args = func_def_node.args.args
         assert len(args) == len(args_expr)
         dependencies: Dict[str, Expr] = dict(zip([arg.arg for arg in args], args_expr))
-        dependencies = self._parse_function_body(func_def_node.body, dependencies)
+        dependencies = self._parse_statements(func_def_node.body, dependencies, is_function_body=True)
         return dependencies["__RETURN__"]
 
-    def _parse_function_body(self, body: List[ast.stmt], dependencies: Dict[str, Expr]) -> Dict[str, Expr]:
+    def _parse_statements(
+        self, body: List[ast.stmt], dependencies: Dict[str, Expr], is_function_body: bool = False
+    ) -> Dict[str, Expr]:
         """
         Iterate over a list of statements and return ONLY the new dependencies mapping created during these statements.
         It is useful to return only the new dependencies, as if we are parsing the body of an IF statement,
@@ -361,29 +365,23 @@ class FunctionBodyParser:
                 dependencies[resolved_assign.var_name] = resolved_assign.expr
                 new_dependencies[resolved_assign.var_name] = resolved_assign.expr
             elif isinstance(stmt, ast.Return):
-                # If a return dependency already exists, it must be a Conditional with an empty `else_` field
-                # (otherwise the code would terminate). So we fill the `else` field of the existing return dependency
-                # with the current return expr.
                 return_expr = self._resolve_expr(stmt.value, dependencies)
-                if "__RETURN__" not in dependencies:
-                    dependencies["__RETURN__"] = return_expr
-                    new_dependencies["__RETURN__"] = return_expr
-                else:
+                if is_function_body and "__RETURN__" in dependencies:
+                    # we parsed the level-0 return, so we won't merge it with previous returns as we would have done
+                    # when handling a If clause, so we need to update the current else_ field of the return dependency
+                    # with this return expression
                     conditional_return = dependencies["__RETURN__"]
                     assert isinstance(conditional_return, Conditional)
                     while conditional_return.else_ is not None:
                         conditional_return = conditional_return.else_
                         assert isinstance(conditional_return, Conditional)
-
                     conditional_return.else_ = return_expr
-                    # TODO probably safer to also retrieve the conditional_return from "new_dependencies"
-                    #  and to set it's else_ field as the one from "dependencies" is not necessarily
-                    #  the same than in "new_dependencies" (who knows what happens in "merge_dependencies" ?)
-
+                else:
+                    new_dependencies["__RETURN__"] = return_expr
             elif isinstance(stmt, ast.If):
                 if_else_dependencies = self._parse_if_else(stmt, dependencies)
-                dependencies = self._merge_dependencies(dependencies, if_else_dependencies)  # type: ignore[arg-type]
-                new_dependencies = self._merge_dependencies(
+                dependencies = self._merge_conditional_dependencies(dependencies, if_else_dependencies)  # type: ignore[arg-type]
+                new_dependencies = self._merge_conditional_dependencies(
                     new_dependencies, if_else_dependencies  # type: ignore[arg-type]
                 )
             else:
@@ -392,21 +390,38 @@ class FunctionBodyParser:
         return new_dependencies
 
     @staticmethod
-    def _merge_dependencies(old_dependencies: Dict[str, Expr], new_dependencies: Dict[str, Expr]) -> Dict[str, Expr]:
+    def _merge_conditional_dependencies(
+        old_dependencies: Dict[str, Expr], new_dependencies: Dict[str, Conditional]
+    ) -> Dict[str, Expr]:
         """
-        For a common dependency between the old ones and the new ones:
-        - If the new dependency is a conditional and the else is empty, the else becomes the old dependency
-        - Otherwise, simply override the old dependency by the new one
+        Merge new conditional dependencies with previous dependencies (potentially conditional).
+        - If a new dependency does not exist in the old dependencies, simply add it
+        - If a new dependency already exist in the old dependencies, two cases:
+          -> It is a __RETURN__ dependency that is necessarily conditional,
+             thus the else_ field of the old dependency is filled with the new return dependency
+          -> Else, if the else_ field of the new dependency is empty, it is filled with the old dependency.
+             If the else_ field of the new dependency is already filled, it means the old dependency is obsolete.
         """
 
         result_dependencies = copy(old_dependencies)
         for dep_name in new_dependencies:
             new_dependency = new_dependencies[dep_name]
-            if dep_name in old_dependencies and isinstance(new_dependency, Conditional):
-                if new_dependency.else_ is None:  # Otherwise do nothing, the old dependency is obsolete
-                    new_dependency = deepcopy(new_dependency)
-                    new_dependency.else_ = old_dependencies[dep_name]
-                    result_dependencies[dep_name] = new_dependency
+            if dep_name in old_dependencies:
+                if dep_name == "__RETURN__":
+                    # Add the new return Expr in the last nested else_ field of the current return Expr
+                    conditional_return = deepcopy(old_dependencies["__RETURN__"])
+                    assert isinstance(conditional_return, Conditional)
+                    while conditional_return.else_ is not None:
+                        conditional_return = conditional_return.else_
+                        assert isinstance(conditional_return, Conditional)
+
+                    conditional_return.else_ = new_dependency
+                    result_dependencies[dep_name] = conditional_return
+                else:
+                    if new_dependency.else_ is None:  # Otherwise do nothing, the old dependency is obsolete
+                        new_dependency = deepcopy(new_dependency)
+                        new_dependency.else_ = old_dependencies[dep_name]
+                        result_dependencies[dep_name] = new_dependency
             else:
                 # We simply assign to a variable whether it has already been defined before.
                 result_dependencies[dep_name] = new_dependency
@@ -423,8 +438,8 @@ class FunctionBodyParser:
         """
 
         condition = self._resolve_expr(if_node.test, dependencies)
-        if_dependencies = self._parse_function_body(if_node.body, dependencies)
-        else_dependencies = self._parse_function_body(if_node.orelse, dependencies)
+        if_dependencies = self._parse_statements(if_node.body, dependencies)
+        else_dependencies = self._parse_statements(if_node.orelse, dependencies)
 
         result_dependencies = {}
 
@@ -616,10 +631,10 @@ def try_replace_apply_lambda_inplace(lines_of_code: List[str], apply_info: Apply
 
     assert isinstance(apply_info.ast_func_expr, ast.Lambda)
 
-    try:
-        expr = parser.parse_lambda(apply_info.ast_func_expr)
-    except NotImplementedError:
-        return
+    # try:
+    expr = parser.parse_lambda(apply_info.ast_func_expr)
+    # except NotImplementedError:
+    #     return
 
     vectorized_code = convert_expr_to_vectorized_code(expr, apply_info.assigned_var_name, apply_info.calling_var_name)
     replace_apply_assignment_inplace(lines_of_code, vectorized_code, apply_info.start_lineno, apply_info.end_lineno)

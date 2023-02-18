@@ -111,11 +111,27 @@ class Conditional(Expr):
     else_: Optional[Union[Conditional, Expr]]  # ie elsif/else/nothing
     numpy_alias: str
 
-    def get_conditions_and_choices_and_default(self, is_root: bool = False) -> Tuple[List[str], List[str], str]:
+    def get_conditions_and_choices_and_default(self) -> Tuple[List[str], List[str], str]:
         """
         Build formatted conditions, choices and default in order to build the vectorized code using `np.select`.
         This method is called recursively on the nested Conditional objects on the `else_` field in order to merge
         the nested formatted conditions with the condition of the current Conditional object.
+
+        eg:
+            def func(val):
+                if val == 1:
+                    return "B"
+                elif val == 2:
+                    return "C"
+                return val
+            s = s.apply(func)
+
+            would be converted to
+
+            s = np.select(conditions=[(s == 1), (s == 2)], choices=["B", "C"], default=s)
+
+            Note the second condition is NOT (s != 1) & (s == 2) as np.select matches the first
+            condition verified within the list of conditions.
         """
 
         # As of writing only a non-Conditional `condition` field is supported,
@@ -130,9 +146,7 @@ class Conditional(Expr):
                 expr_choices,
                 expr_default,
             ) = self.expr.get_conditions_and_choices_and_default()
-            conditions = [condition + " & " + cond for cond in expr_conditions] + [
-                condition + " & ~(" + " & ".join(expr_conditions) + ")"
-            ]
+            conditions = [condition + " & " + cond for cond in expr_conditions] + [condition]
             choices = expr_choices + [expr_default]
         else:
             conditions = [condition]
@@ -146,7 +160,7 @@ class Conditional(Expr):
                 else_choices,
                 default,
             ) = self.else_.get_conditions_and_choices_and_default()
-            conditions += [cond if is_root else "~" + condition + " & " + cond for cond in else_conditions]
+            conditions += [cond for cond in else_conditions]
             choices += else_choices
         else:  # "terminal" expression
             default = self.else_.to_vectorized_code()
@@ -154,7 +168,11 @@ class Conditional(Expr):
         return conditions, choices, default
 
     def to_vectorized_code(self) -> str:
-        conditions, choices, default = self.get_conditions_and_choices_and_default(is_root=True)
+        """
+        Build a np.select expression from the current Conditional object.
+        """
+
+        conditions, choices, default = self.get_conditions_and_choices_and_default()
         result = f"{self.numpy_alias}.select(conditions=[{', '.join(conditions)}], choices=[{', '.join(choices)}], default={default})"
         return result
 
