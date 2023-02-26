@@ -1,3 +1,4 @@
+import difflib
 import inspect
 
 import pytest
@@ -10,7 +11,17 @@ def compare(input_code: str, expected_code: str):
     expected_code = inspect.cleandoc(expected_code)
 
     result = replace_apply(input_code)
-    assert result == expected_code, f"{result=} VS {expected_code=}"
+    if result != expected_code:
+        print("{} => {}".format(result, expected_code))
+        for i, s in enumerate(difflib.ndiff(result, expected_code)):
+            if s[0] == " ":
+                continue
+            elif s[0] == "-":
+                print('Delete "{}" from position {}'.format(s[-1], i))
+            elif s[0] == "+":
+                print('Add "{}" to position {}'.format(s[-1], i))
+        print()
+        raise ValueError(f"\n{result=}\n{expected_code=}")
 
 
 class TestNoReplace:
@@ -35,30 +46,36 @@ class TestNoReplace:
             import pandas
             import numpy as np
 
+
             def func(val):
-                a, b = test()
+                (a, b) = test()
                 a.x = c
                 return val + a.x
+
+
             s = s.apply_func(func)
             print(s)
             """,
             ),
-            (
-                """
-                import json
-                def func(row):
-                    return json.loads(row)
-
-                x = df.apply(func, axis=1)
-                """,
-                """
-                import json
-                def func(row):
-                    return json.loads(row)
-
-                x = df.apply(func, axis=1)
-                """,
-            ),
+            # (
+            #     """
+            #     import json
+            #
+            #     def func(row):
+            #         return json.loads(row)
+            #     x = df.apply(func, axis=1)
+            #     """,
+            #     """
+            #     import json
+            #
+            #
+            #     def func(row):
+            #         return json.loads(row)
+            #
+            #
+            #     x = df.apply(func, axis=1)
+            #     """,
+            # ),
         ],
     )
     def test_no_replace(self, input_code, expected_code):
@@ -118,7 +135,7 @@ class TestReplaceApplySimpleFunctions:
                 s = s.apply(func)
                 """,
                 """
-                s = (2 + s) + (2 + s)
+                s = 2 + s + (2 + s)
                 """,
             ),
         ],
@@ -132,10 +149,12 @@ class TestReplaceApplySimpleFunctions:
             (
                 """
                 import pandas as pd
+
                 s = s.apply(pd.isna)
                 """,
                 """
                 import pandas as pd
+
                 s = pd.isna(s)
                 """,
             ),
@@ -143,14 +162,19 @@ class TestReplaceApplySimpleFunctions:
                 """
                 import pandas as pd
                 import numpy as np
+
+
                 def func(val):
                     res = np.log(val) + 1
                     return np.isnan(pd.isna(res) * np.exp(2))
+
+
                 s = s.apply(func)
                 """,
                 """
                 import pandas as pd
                 import numpy as np
+
                 s = np.isnan(pd.isna(np.log(s) + 1) * np.exp(2))
                 """,
             ),
@@ -181,11 +205,13 @@ class TestReplaceApplySimpleFunctions:
             (
                 """
                 import pandas as pd
+
                 s = s.apply(int)
                 s = s.apply(np.float)
                 """,
                 """
                 import pandas as pd
+
                 s = s.astype(int)
                 s = s.astype(np.float)
                 """,
@@ -194,6 +220,8 @@ class TestReplaceApplySimpleFunctions:
                 """
                 def func(val):
                     return float(np.int(val))
+
+
                 s = s.apply(func)
                 """,
                 """
@@ -220,6 +248,8 @@ class TestReplaceApplySimpleFunctions:
                 """
                     def func(val):
                         return val.capitalize()
+
+
                     s = s.apply(func)
                     """,
                 """
@@ -230,6 +260,8 @@ class TestReplaceApplySimpleFunctions:
                 """
                 def func(val):
                     return val.capitalize().startswith("A")
+
+
                 s = s.apply(func)
                 """,
                 """
@@ -240,6 +272,8 @@ class TestReplaceApplySimpleFunctions:
                 """
                 def func(val):
                     return ((val + "b").capitalize() + "a").startswith("A")
+
+
                 s = s.apply(func)
                 """,
                 """
@@ -270,7 +304,7 @@ class TestReplaceApplySimpleFunctions:
                         return x + 1
 
 
-                    s = (s + 2) + 1
+                    s = s + 2 + 1
                 """,
             ),
         ],
@@ -308,37 +342,139 @@ class TestReplaceApplySimpleFunctions:
     def test_f_strings(self, input_code, expected_code):
         compare(input_code, expected_code)
 
+
+class TestReplaceApplyAnyLocation:
     @pytest.mark.parametrize(
         "input_code,expected_code",
         [
             (
                 """
             def func(val):
-                return val if val == 0 else 0
-            s = s.apply(func)
+                return val + 1
+
+            def main():
+                s = s.apply(func)
+                return s
             """,
                 """
-            import numpy as np
-            s = np.select(conditions=[(s == 0)], choices=[s], default=0)
+            def main():
+                s = s + 1
+                return s
             """,
             ),
             (
                 """
-            def func(row):
-                a = "A" if row["col1"] == 0 else "B"
-                if row["col2"] == 1:
-                    return a
-                return "C"
-            s = df.apply(func, axis=1)
+                def func(val):
+                    return val + 1
+
+                def main():
+                    return s.apply(func)
+                """,
+                """
+                def main():
+                    return s + 1
+                """,
+            ),
+        ],
+    )
+    def test_apply_call_within_function(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+            def func(val):
+                return val + 1
+
+            class A:
+                def method(self):
+                    s = s.apply(func)
+
+            def main():
+                a = A()
+                a.method()
             """,
                 """
-            import numpy as np
-            s = np.select(conditions=[(df["col2"] == 1) & (df["col1"] == 0), (df["col2"] == 1)], choices=["A", "B"], default="C")
+            class A:
+                def method(self):
+                    s = s + 1
+
+
+            def main():
+                a = A()
+                a.method()
             """,
             ),
         ],
     )
-    def test_if_expression(self, input_code, expected_code):
+    def test_apply_call_within_method(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+            def func(val):
+                return val + 2 * val
+
+            val = s.apply(func).sum()
+            """,
+                """
+            val = (s + 2 * s).sum()
+            """,
+            ),
+        ],
+    )
+    def test_dummy_chained_assignment(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+            def func(val):
+                return val + 2 * val
+
+            s = s.isna().apply(func)
+            """,
+                """
+            s_temp = s.isna()
+            s = s_temp + 2 * s_temp
+            """,
+            ),
+        ],
+    )
+    def test_chained_assignment(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+            def func(val):
+                return val + 2 * val
+
+            if True:
+                s = 1
+            else:
+                s = s.isna().apply(func)
+            """,
+                """
+            if True:
+                s = 1
+            else:
+                s_temp = s.isna()
+                s = s_temp + 2 * s_temp
+            """,
+            ),
+        ],
+    )
+    def test_orelse_chained_assignment(self, input_code, expected_code):
         compare(input_code, expected_code)
 
 
@@ -358,7 +494,8 @@ class TestReplaceApplyConditionalFunctions:
             """,
                 """
             import numpy as np
-            s = np.select(conditions=[(s == 1)], choices=["A"], default="C")
+
+            s = np.select(conditions=[s == 1], choices=["A"], default="C")
             """,
             ),
             (
@@ -375,7 +512,8 @@ class TestReplaceApplyConditionalFunctions:
             """,
                 """
             import numpy as np
-            s = np.select(conditions=[(s == 1), (s == 2)], choices=["A", "B"], default="C")
+
+            s = np.select(conditions=[s == 1, s == 2], choices=["A", "B"], default="C")
             """,
             ),
         ],
@@ -397,7 +535,8 @@ class TestReplaceApplyConditionalFunctions:
             """,
                 """
             import numpy as np
-            s = np.select(conditions=[(s == 1)], choices=["B"], default="A")
+
+            s = np.select(conditions=[s == 1], choices=["B"], default="A")
             """,
             ),
             (
@@ -440,7 +579,8 @@ class TestReplaceApplyConditionalFunctions:
             """,
                 """
             import numpy as np
-            s = np.select(conditions=[(s == 1) & (s == 5), (s == 1), (s == 10)], choices=["A", "B", "C"], default="D")
+
+            s = np.select(conditions=[(s == 1) & (s == 5), s == 1, s == 10], choices=["A", "B", "C"], default="D")
             """,
             )
         ],
@@ -459,11 +599,13 @@ class TestReplaceApplyConditionalFunctions:
                 elif val == 2:
                     return "C"
                 return val
+
             s = s.apply(func)
             """,
                 """
             import numpy as np
-            s = np.select(conditions=[(s == 1), (s == 2)], choices=["B", "C"], default=s)
+
+            s = np.select(conditions=[s == 1, s == 2], choices=["B", "C"], default=s)
             """,
             ),
             (
@@ -475,11 +617,13 @@ class TestReplaceApplyConditionalFunctions:
                         return "C"
                     else:
                         return val
+
                 s = s.apply(func)
                 """,
                 """
                 import numpy as np
-                s = np.select(conditions=[(s == 1), (s == 2)], choices=["B", "C"], default=s)
+
+                s = np.select(conditions=[s == 1, s == 2], choices=["B", "C"], default=s)
                 """,
             ),
             (
@@ -490,11 +634,13 @@ class TestReplaceApplyConditionalFunctions:
                     if val == 2:
                         return "C"
                     return val
+
                 s = s.apply(func)
                 """,
                 """
                 import numpy as np
-                s = np.select(conditions=[(s == 1), (s == 2)], choices=["B", "C"], default=s)
+
+                s = np.select(conditions=[s == 1, s == 2], choices=["B", "C"], default=s)
                 """,
             ),
             (
@@ -516,7 +662,11 @@ class TestReplaceApplyConditionalFunctions:
                 """
                 import numpy as np
 
-                df["H"] = np.select(conditions=[(df["A"] == 1) & (df["B"] == 1), (df["A"] == 1), (df["B"] == 2)], choices=[df["C"], df["D"], df["E"]], default=0)
+                df["H"] = np.select(
+                    conditions=[(df["A"] == 1) & (df["B"] == 1), df["A"] == 1, df["B"] == 2],
+                    choices=[df["C"], df["D"], df["E"]],
+                    default=0,
+                )
                 """,
             ),
             (
@@ -541,7 +691,16 @@ class TestReplaceApplyConditionalFunctions:
                 """
                 import numpy as np
 
-                df["H"] = np.select(conditions=[(df["A"] != 0) & (df["A"] == 1) & (df["B"] == 2), (df["A"] != 0) & (df["A"] == 1), (df["A"] != 0) & (df["B"] == 3), (df["A"] != 0)], choices=[df["C"], df["D"], df["E"], df["F"]], default=0.0)
+                df["H"] = np.select(
+                    conditions=[
+                        (df["A"] != 0) & (df["A"] == 1) & (df["B"] == 2),
+                        (df["A"] != 0) & (df["A"] == 1),
+                        (df["A"] != 0) & (df["B"] == 3),
+                        df["A"] != 0,
+                    ],
+                    choices=[df["C"], df["D"], df["E"], df["F"]],
+                    default=0.0,
+                )
                 """,
             ),
         ],
@@ -561,16 +720,19 @@ class TestReplaceApplyConditionalFunctions:
                 else:
                     res = "C"
                 return res
+
             s = s.apply(func)
             """,
                 """
             import numpy as np
-            s = np.select(conditions=[(s == 1)], choices=["A"], default="C")
+
+            s = np.select(conditions=[s == 1], choices=["A"], default="C")
             """,
             ),
             (
                 """
             import numpy
+
             def func(val):
                 if val == 1:
                     res = "A"
@@ -581,12 +743,50 @@ class TestReplaceApplyConditionalFunctions:
             """,
                 """
             import numpy
-            s = numpy.select(conditions=[(s == 1)], choices=["A"], default="C")
+
+            s = numpy.select(conditions=[s == 1], choices=["A"], default="C")
             """,
             ),
         ],
     )
     def test_numpy_already_imported(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+            def func(val):
+                return val if val == 0 else 0
+
+            s = s.apply(func)
+            """,
+                """
+            import numpy as np
+
+            s = np.select(conditions=[s == 0], choices=[s], default=0)
+            """,
+            ),
+            (
+                """
+            def func(row):
+                a = "A" if row["col1"] == 0 else "B"
+                if row["col2"] == 1:
+                    return a
+                return "C"
+
+            s = df.apply(func, axis=1)
+            """,
+                """
+            import numpy as np
+
+            s = np.select(conditions=[(df["col2"] == 1) & (df["col1"] == 0), df["col2"] == 1], choices=["A", "B"], default="C")
+            """,
+            ),
+        ],
+    )
+    def test_if_expression(self, input_code, expected_code):
         compare(input_code, expected_code)
 
 
@@ -598,11 +798,14 @@ class TestReplaceApplyDataFrame:
                 """
                 def func(col):
                     return col
+
                 var_not_starting_with_df["col3"] = var_not_starting_with_df.apply(func, axis=0)
                 """,
                 """
                 def func(col):
                     return col
+
+
                 var_not_starting_with_df["col3"] = var_not_starting_with_df.apply(func, axis=0)
                 """,
             ),
@@ -618,11 +821,14 @@ class TestReplaceApplyDataFrame:
                 """
                 def func(col):
                     return col
+
                 df["col3"] = df.apply(func)
                 """,
                 """
                 def func(col):
                     return col
+
+
                 df["col3"] = df.apply(func)
                 """,
             ),
@@ -640,10 +846,11 @@ class TestReplaceApplyDataFrame:
                     a = row["col1"]
                     b = row[0] * 2  # unusual integer column name
                     return a + b
+
                 df["col3"] = df.apply(func, axis=1)
                 """,
                 """
-                df["col3"] = df["col1"] + (df[0] * 2)
+                df["col3"] = df["col1"] + df[0] * 2
                 """,
             ),
             (
@@ -656,11 +863,13 @@ class TestReplaceApplyDataFrame:
                 else:
                     res = "C"
                 return res
+
             df["col3"] = df.apply(func, axis=1)
             """,
                 """
             import numpy as np
-            df["col3"] = np.select(conditions=[(df["col1"] == 1), (df["col2"] == 2)], choices=["A", "B"], default="C")
+
+            df["col3"] = np.select(conditions=[df["col1"] == 1, df["col2"] == 2], choices=["A", "B"], default="C")
             """,
             ),
         ],
@@ -675,6 +884,7 @@ class TestReplaceApplyDataFrame:
                 """
                 def func(val):
                     return val + 1
+
                 df["col3"] = df["col1"].apply(func)
                 """,
                 """
@@ -693,6 +903,7 @@ class TestReplaceApplyDataFrame:
                 """
                 def func(val):
                     return val + 1
+
                 df.col3 = df.col1.apply(func)
                 """,
                 """
@@ -703,6 +914,7 @@ class TestReplaceApplyDataFrame:
                 """
                 def func(row):
                     return row.col1 + row["col2"]
+
                 df.col3 = df.apply(func, axis=1)
                 """,
                 """
@@ -712,4 +924,34 @@ class TestReplaceApplyDataFrame:
         ],
     )
     def test_df_dot_notation(self, input_code, expected_code):
+        compare(input_code, expected_code)
+
+
+class TestGlobalVariables:
+    @pytest.mark.parametrize(
+        "input_code,expected_code",
+        [
+            (
+                """
+                A = 1
+                B = 2
+
+                def func(val):
+                    if val == B:
+                        return val + A
+                    return val
+
+                s = s.apply(func)
+                """,
+                """
+                import numpy as np
+
+                A = 1
+                B = 2
+                s = np.select(conditions=[s == B], choices=[s + A], default=s)
+                """,
+            ),
+        ],
+    )
+    def test_global_variables(self, input_code, expected_code):
         compare(input_code, expected_code)

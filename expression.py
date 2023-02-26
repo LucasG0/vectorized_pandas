@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple, Union
 
@@ -19,6 +20,20 @@ class Expr:
         """
 
         raise NotImplementedError("Abstract method")
+
+
+@dataclass
+class Global(Expr):
+    """
+    Only need variable name as we want to refer to the variable name instead of the
+    resolved expr.
+    """
+
+    name: str
+    # resolved_expr: Expr  #  Not needed atm but might be useful later ?
+
+    def to_vectorized_code(self) -> str:
+        return self.name
 
 
 @dataclass
@@ -275,13 +290,13 @@ def remove_extra_parenthesis(expr_code: str) -> str:
     return expr_code
 
 
-def convert_expr_to_vectorized_code(expr: Expr, assigned_var_name: str, calling_var_name: str) -> str:
-    """
-    Generate the new vectorized code that will replace the `apply` call.
-    """
+def convert_expr_to_expr_node(expr: Expr, calling_var_name: str) -> ast.expr:
 
     expr_code = expr.to_vectorized_code()
     expr_code = expr_code.replace(TO_REPLACE_BY_VAR_NAME, calling_var_name)
     if isinstance(expr, (BinaryOp, BinaryBooleanExpr)):
         expr_code = remove_extra_parenthesis(expr_code)
-    return f"{assigned_var_name} = {expr_code}"
+
+    expr_node = ast.parse(expr_code).body[0]
+    assert isinstance(expr_node, ast.Expr)
+    return expr_node.value
