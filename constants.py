@@ -72,6 +72,7 @@ REPLACEABLE_NUMPY_FUNCS = {
     "sqrt",
     "clip",
     "sign",
+    "nan_to_num",
 }
 
 NATIVE_TYPE_FUNCS = ["int", "str", "float", "bool"]
