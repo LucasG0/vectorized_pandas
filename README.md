@@ -3,7 +3,7 @@
 `Series.apply` and `DataFrame.apply(axis=1)` tend to be overused by pandas users because of their simplicity, despite their limited performances.
 I wrote [this article](https://www.terality.com/post/why-pandas-apply-method-is-slow) detailling bottlenecks of `apply` (Terality's related content is not relevant anymore as the company closed).
 
-`vectorized_pandas` is a Python package automatically replacing costly pandas `apply` calls by builtin/vectorized operations.
+`vectorized_pandas` is a Python package automatically replacing costly pandas `apply` calls by builtin/vectorized operations, if possible.
 
 ```python
 >>> from vectorized_apply import replace_apply
