@@ -27,6 +27,7 @@ df["H"] = df.apply(func, axis=1)
 >>> replace_apply(input_code)
 """
 import numpy as np
+
 df["H"] = np.select(
     conditions=[(df["A"] == 1) & (df["B"] == 1), df["A"] == 1, df["B"] == 2],
     choices=[df["C"], df["D"], df["E"]],
